@@ -401,6 +401,42 @@ penpot.ui.onMessage((message: unknown) => {
         break;
       }
 
+      // ── Scan document fonts ───────────────────────────────────────────
+      case "scan-fonts": {
+        const seen = new Set<string>();
+        try {
+          if (penpot.root) {
+            // find() traverses the full shape tree depth-first
+            const textNodes = penpot.root.find(
+              (node) => (node as any).type === "text"
+            );
+            for (const node of textNodes ?? []) {
+              const n = node as any;
+              // Single-font text shapes expose fontFamily at the top level
+              if (typeof n.fontFamily === "string" && n.fontFamily) {
+                seen.add(n.fontFamily);
+              }
+              // Mixed-font text: walk paragraphs → spans
+              for (const para of n.paragraphs ?? n.content?.paragraphs ?? []) {
+                const p = para as any;
+                if (typeof p.fontFamily === "string" && p.fontFamily) seen.add(p.fontFamily);
+                for (const span of p.children ?? p.characters ?? []) {
+                  const s = span as any;
+                  if (typeof s.fontFamily === "string" && s.fontFamily) seen.add(s.fontFamily);
+                }
+              }
+            }
+          }
+        } catch {
+          // Scanning is best-effort; return whatever was collected
+        }
+        penpot.ui.sendMessage({
+          type: "fonts-loaded",
+          fonts: Array.from(seen).sort(),
+        });
+        break;
+      }
+
       default:
         console.warn("[Token Manager plugin] Unknown message type:", msg.type);
     }

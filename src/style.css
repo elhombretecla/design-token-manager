@@ -1312,3 +1312,92 @@ html.col-resizing * {
   color: var(--foreground-secondary);
   white-space: nowrap;
 }
+
+/* ════════════════════════════════════════════════════════════════════════
+   SMART FONT PICKER DROPDOWN
+   Floats below the font-family input; z-index above modal overlay (800)
+   and cp-popover (850) so it's always reachable.
+   ════════════════════════════════════════════════════════════════════════ */
+
+#font-picker-dropdown {
+  position: fixed;
+  z-index: 870;
+  background-color: var(--background-primary);
+  border: 1px solid var(--background-quaternary);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+  overflow-y: auto;
+  max-height: 260px;
+}
+
+.fp-section-header {
+  position: sticky;
+  top: 0;
+  padding: 8px 10px 4px;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  color: var(--foreground-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background-color: var(--background-primary);
+  pointer-events: none;
+  user-select: none;
+}
+
+.fp-item {
+  padding: 6px 12px;
+  font-size: var(--font-size-s);
+  color: var(--foreground-primary);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background-color 0.1s;
+}
+
+.fp-item:hover {
+  background-color: var(--background-tertiary);
+}
+
+.fp-divider {
+  height: 1px;
+  background-color: var(--background-quaternary);
+  margin: 4px 0;
+}
+
+.fp-empty {
+  padding: 14px 12px;
+  font-size: var(--font-size-s);
+  color: var(--foreground-secondary);
+  text-align: center;
+}
+
+/* Font-picker chevron — positioned inside the input's visual boundary */
+.fp-input-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.fp-chevron-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--foreground-secondary);
+  pointer-events: all;
+  padding: 0;
+  background: none;
+  border: none;
+  line-height: 1;
+}
+
+.fp-chevron-btn:hover {
+  color: var(--foreground-primary);
+}
+
+/* Input needs right padding so text doesn't overlap the chevron */
+.has-fp-chevron {
+  padding-right: 28px !important;
+  width: 100%;
+}

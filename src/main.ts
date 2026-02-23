@@ -40,6 +40,7 @@ type PluginMessage =
   | { type: "sets-updated"; sets: SerializedSet[]; themes: SerializedTheme[] }
   | { type: "tokens-updated"; setId: string; tokens: SerializedToken[] }
   | { type: "all-tokens-by-type-loaded"; tokenType: string; sets: AliasPickerSet[] }
+  | { type: "fonts-loaded"; fonts: string[] }
   | { type: "error"; message: string };
 
 type SortKey = "name" | "value" | "resolvedValue" | "type";
@@ -56,6 +57,7 @@ const state = {
   sidebarCollapsed: false,
   sortKey: "type" as SortKey | null,
   sortDir: "asc" as "asc" | "desc",
+  documentFonts: [] as string[],
 };
 
 // ── Bulk-selection state ──────────────────────────────────────────────────
@@ -264,6 +266,13 @@ window.addEventListener("message", (event: MessageEvent) => {
         modalAliasPicker.pickerSets = msg.sets;
         renderModalAliasPicker();
       }
+      break;
+
+    case "fonts-loaded":
+      state.documentFonts = msg.fonts;
+      // Refresh the picker if it's currently open so the Document Fonts
+      // section populates without the user needing to close and reopen.
+      if (fontPickerInput) renderFontPicker();
       break;
 
     case "error":
@@ -775,6 +784,142 @@ function openModalAliasPicker(tokenType: string, anchorEl: HTMLElement): void {
   }, 0);
 }
 
+// ════════════════════════════════════════════════════════════════════════
+//  SMART FONT PICKER
+//  A lightweight searchable dropdown that floats below a font-family input.
+//  Two sections: "Document Fonts" (scanned live) + "Popular Fonts" (static).
+//  Custom / unknown font names typed directly are always accepted.
+// ════════════════════════════════════════════════════════════════════════
+
+// The input element currently driving the open picker (null = closed).
+let fontPickerInput: HTMLInputElement | null = null;
+
+function openFontPicker(inputEl: HTMLInputElement): void {
+  // Clicking an already-open picker's own input is a no-op
+  if (fontPickerInput === inputEl && document.getElementById("font-picker-dropdown")) return;
+  closeFontPicker();
+  fontPickerInput = inputEl;
+
+  // Kick off a fresh document-font scan every time the picker opens
+  sendToPlugin({ type: "scan-fonts" });
+
+  renderFontPicker();
+
+  inputEl.addEventListener("input", renderFontPicker);
+  inputEl.addEventListener("keydown", onFontPickerKeydown);
+  setTimeout(() => {
+    document.addEventListener("mousedown", onFontPickerOutsideClick, true);
+  }, 0);
+}
+
+function closeFontPicker(): void {
+  if (!fontPickerInput) return;
+  fontPickerInput.removeEventListener("input", renderFontPicker);
+  fontPickerInput.removeEventListener("keydown", onFontPickerKeydown);
+  document.removeEventListener("mousedown", onFontPickerOutsideClick, true);
+  document.getElementById("font-picker-dropdown")?.remove();
+  fontPickerInput = null;
+}
+
+function onFontPickerKeydown(e: KeyboardEvent): void {
+  // Enter / Escape: commit the typed value and close
+  if (e.key === "Enter" || e.key === "Escape") {
+    e.preventDefault();
+    closeFontPicker();
+  }
+}
+
+function onFontPickerOutsideClick(e: MouseEvent): void {
+  const dropdown = document.getElementById("font-picker-dropdown");
+  const t = e.target as Node;
+  if (dropdown?.contains(t) || fontPickerInput?.contains(t)) return;
+  closeFontPicker();
+}
+
+function renderFontPicker(): void {
+  if (!fontPickerInput) return;
+  const query = fontPickerInput.value.toLowerCase().trim();
+  const filter = (list: string[]) =>
+    query ? list.filter((f) => f.toLowerCase().includes(query)) : list;
+
+  const docFonts = filter(state.documentFonts);
+  // Show popular fonts that aren't already in the document section
+  const popularFonts = filter(
+    POPULAR_FONTS.filter((f) => !state.documentFonts.includes(f))
+  );
+
+  const renderItems = (fonts: string[]): string =>
+    fonts
+      .map((f) => `<div class="fp-item" data-font="${esc(f)}">${esc(f)}</div>`)
+      .join("");
+
+  const hasDoc = docFonts.length > 0;
+  const hasPop = popularFonts.length > 0;
+
+  const html =
+    !hasDoc && !hasPop
+      ? '<div class="fp-empty">No fonts match</div>'
+      : (hasDoc
+          ? `<div class="fp-section-header">Document Fonts</div>${renderItems(docFonts)}`
+          : "") +
+        (hasDoc && hasPop ? '<div class="fp-divider"></div>' : "") +
+        (hasPop
+          ? `<div class="fp-section-header">Popular Fonts</div>${renderItems(popularFonts)}`
+          : "");
+
+  // Create or reuse the dropdown element (attached to body to escape modal overflow)
+  let dropdown = document.getElementById("font-picker-dropdown");
+  if (!dropdown) {
+    dropdown = document.createElement("div");
+    dropdown.id = "font-picker-dropdown";
+    document.body.appendChild(dropdown);
+  }
+  dropdown.innerHTML = html;
+
+  // Position directly below the input
+  const rect = fontPickerInput.getBoundingClientRect();
+  dropdown.style.left = `${rect.left}px`;
+  dropdown.style.top = `${rect.bottom + 4}px`;
+  dropdown.style.width = `${Math.max(rect.width, 220)}px`;
+
+  // mousedown (not click) fires before the input loses focus, so we can
+  // prevent blur with e.preventDefault() and keep the input focused.
+  dropdown.querySelectorAll<HTMLElement>(".fp-item").forEach((item) => {
+    item.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      const font = item.dataset.font!;
+      const target = fontPickerInput; // capture before closeFontPicker clears it
+      closeFontPicker();
+      if (target) {
+        target.value = font;
+        // Notify any other listeners (e.g. color swatch preview)
+        target.dispatchEvent(new Event("input", { bubbles: true }));
+        target.focus();
+      }
+    });
+  });
+}
+
+// Called after every modal render that may contain font-picker inputs.
+// Attaches the picker to every [data-font-picker] input and its paired chevron.
+function bindFontPicker(): void {
+  document
+    .querySelectorAll<HTMLInputElement>('[data-font-picker="true"]')
+    .forEach((input) => {
+      input.addEventListener("click", () => openFontPicker(input));
+    });
+
+  // Chevron buttons carry data-font-picker-trigger="<inputId>" so they open
+  // the same picker as clicking the input itself.
+  document
+    .querySelectorAll<HTMLButtonElement>("[data-font-picker-trigger]")
+    .forEach((btn) => {
+      const inputId = btn.dataset.fontPickerTrigger!;
+      const input = document.getElementById(inputId) as HTMLInputElement | null;
+      if (input) btn.addEventListener("click", () => openFontPicker(input));
+    });
+}
+
 function bindValueAliasTrigger(): void {
   const btn = document.getElementById("value-alias-trigger-btn") as HTMLButtonElement | null;
   if (!btn) return;
@@ -1236,6 +1381,7 @@ function showModal(html: string): void {
 
 function closeModal(): void {
   closeModalAliasPicker();
+  closeFontPicker();
   el("modal-overlay").classList.add("hidden");
   el("modal-container").innerHTML = "";
 }
@@ -1482,6 +1628,214 @@ function getTypeDef(value: string): TokenTypeDef {
   return TOKEN_TYPES.find((t) => t.value === value) ?? TOKEN_TYPES[0];
 }
 
+// ════════════════════════════════════════════════════════════════════════
+//  POPULAR FONTS  (static list — no API call needed)
+//  Shown in the Font Picker dropdown as a fallback / discovery aid.
+//  Document fonts (scanned live) are shown above this list.
+// ════════════════════════════════════════════════════════════════════════
+const POPULAR_FONTS: string[] = [
+  "Abril Fatface",
+  "Acme",
+  "Aleo",
+  "Alegreya",
+  "Alegreya Sans",
+  "Alegreya SC",
+  "Alex Brush",
+  "Alfa Slab One",
+  "Almarai",
+  "Amiri",
+  "Andada Pro",
+  "Anonymous Pro",
+  "Anton",
+  "Archivo",
+  "Archivo Narrow",
+  "Arial",
+  "Arimo",
+  "Arvo",
+  "Asap",
+  "Assistant",
+  "Barlow",
+  "Barlow Condensed",
+  "Barlow Semi Condensed",
+  "Baskervville",
+  "Be Vietnam Pro",
+  "Bebas Neue",
+  "Bitter",
+  "Boogaloo",
+  "Bree Serif",
+  "Cabin",
+  "Cabin Condensed",
+  "Cairo",
+  "Cantarell",
+  "Cardo",
+  "Catamaran",
+  "Caveat",
+  "Chakra Petch",
+  "Changa",
+  "Chivo",
+  "Cinzel",
+  "Comfortaa",
+  "Cormorant",
+  "Cormorant Garamond",
+  "Courier New",
+  "Cousine",
+  "Crimson Pro",
+  "Crimson Text",
+  "Cuprum",
+  "Dancing Script",
+  "Darker Grotesque",
+  "DM Mono",
+  "DM Sans",
+  "DM Serif Display",
+  "DM Serif Text",
+  "Domine",
+  "Dosis",
+  "EB Garamond",
+  "Eczar",
+  "El Messiri",
+  "Encode Sans",
+  "Epilogue",
+  "Exo",
+  "Exo 2",
+  "Faustina",
+  "Figtree",
+  "Fira Code",
+  "Fira Sans",
+  "Fira Sans Condensed",
+  "Fjalla One",
+  "Francois One",
+  "Frank Ruhl Libre",
+  "Fredoka",
+  "Geologica",
+  "Georgia",
+  "Gloria Hallelujah",
+  "Gothic A1",
+  "Hammersmith One",
+  "Hanken Grotesk",
+  "Heebo",
+  "Helvetica",
+  "Hind",
+  "Hind Madurai",
+  "Hind Siliguri",
+  "IBM Plex Mono",
+  "IBM Plex Sans",
+  "IBM Plex Serif",
+  "Inconsolata",
+  "Indie Flower",
+  "Inter",
+  "JetBrains Mono",
+  "Josefin Sans",
+  "Josefin Slab",
+  "Jost",
+  "Julius Sans One",
+  "Kalam",
+  "Kanit",
+  "Karla",
+  "Kaushan Script",
+  "Kreon",
+  "Lato",
+  "Lexend",
+  "Lexend Deca",
+  "Libre Baskerville",
+  "Libre Caslon Text",
+  "Libre Franklin",
+  "Literata",
+  "Lobster",
+  "Lora",
+  "Luckiest Guy",
+  "Manrope",
+  "Markazi Text",
+  "Merriweather",
+  "Merriweather Sans",
+  "Montserrat",
+  "Montserrat Alternates",
+  "Mukta",
+  "Mulish",
+  "Nanum Gothic",
+  "Neuton",
+  "Noticia Text",
+  "Noto Sans",
+  "Noto Sans JP",
+  "Noto Sans KR",
+  "Noto Sans SC",
+  "Noto Serif",
+  "Noto Serif JP",
+  "Nunito",
+  "Nunito Sans",
+  "Old Standard TT",
+  "Open Sans",
+  "Oswald",
+  "Outfit",
+  "Overpass",
+  "Oxygen",
+  "Pacifico",
+  "Passion One",
+  "Patrick Hand",
+  "Permanent Marker",
+  "Philosopher",
+  "Piazzolla",
+  "Playfair Display",
+  "Playfair Display SC",
+  "Plus Jakarta Sans",
+  "Podkova",
+  "Poiret One",
+  "Poppins",
+  "Prata",
+  "Proza Libre",
+  "PT Mono",
+  "PT Sans",
+  "PT Sans Caption",
+  "PT Sans Narrow",
+  "PT Serif",
+  "Public Sans",
+  "Questrial",
+  "Quicksand",
+  "Rajdhani",
+  "Raleway",
+  "Readex Pro",
+  "Righteous",
+  "Roboto",
+  "Roboto Condensed",
+  "Roboto Flex",
+  "Roboto Mono",
+  "Roboto Slab",
+  "Rokkitt",
+  "Rubik",
+  "Russo One",
+  "Saira",
+  "Sarabun",
+  "Satisfy",
+  "Secular One",
+  "Sen",
+  "Shadows Into Light",
+  "Signika",
+  "Sora",
+  "Source Code Pro",
+  "Source Sans 3",
+  "Source Serif 4",
+  "Space Grotesk",
+  "Space Mono",
+  "Spectral",
+  "Syne",
+  "Tahoma",
+  "Tajawal",
+  "Teko",
+  "Times New Roman",
+  "Titillium Web",
+  "Trebuchet MS",
+  "Ubuntu",
+  "Ubuntu Condensed",
+  "Ubuntu Mono",
+  "Unbounded",
+  "Urbanist",
+  "Varela Round",
+  "Verdana",
+  "Vollkorn",
+  "Work Sans",
+  "Yanone Kaffeesatz",
+  "Zilla Slab",
+];
+
 // Builds the value fields section for shadow tokens
 function shadowFieldsHtml(x = "0", y = "4", blur = "8", spread = "0", color = "rgba(0,0,0,0.25)", type = "drop-shadow"): string {
   return `
@@ -1532,8 +1886,14 @@ function typographyFieldsHtml(vals: Record<string, string> = {}): string {
     <div class="typo-grid">
       <div class="form-field">
         <label class="form-label" for="typo-family">Font Family</label>
-        <input type="text" class="input form-input" id="typo-family"
-               value="${v("fontFamily")}" placeholder="Inter" />
+        <div class="value-input-wrapper">
+          <input type="text" class="input form-input has-fp-chevron" id="typo-family"
+                 value="${v("fontFamily")}" placeholder="Inter"
+                 data-font-picker="true" autocomplete="off" />
+          <button type="button" class="icon-btn fp-chevron-btn"
+                  data-font-picker-trigger="typo-family"
+                  title="Browse fonts">${CHEV_DOWN}</button>
+        </div>
       </div>
       <div class="form-field">
         <label class="form-label" for="typo-size">Font Size</label>
@@ -1577,17 +1937,22 @@ function typographyFieldsHtml(vals: Record<string, string> = {}): string {
 // Builds the simple single-value input area
 function simpleValueFieldHtml(type: string, value = ""): string {
   const isColor = type === "color";
+  const isFontFamily = type === "fontFamilies";
   const { placeholder } = getTypeDef(type);
   return `
     <div class="form-field">
       <label class="form-label" for="token-value-input">Value</label>
       <div class="value-input-wrapper">
         ${isColor ? `<span class="color-swatch-small" id="token-value-swatch" style="background:${esc(value || "#cccccc")}"></span>` : ""}
-        <input type="text" class="input form-input${isColor ? " has-swatch" : ""}"
+        ${isFontFamily ? `<div class="fp-input-wrap">` : ""}
+        <input type="text" class="input form-input${isColor ? " has-swatch" : ""}${isFontFamily ? " has-fp-chevron" : ""}"
                id="token-value-input"
                value="${esc(value)}"
                placeholder="${esc(placeholder)}"
-               autocomplete="off" />
+               autocomplete="off"${isFontFamily ? ' data-font-picker="true"' : ''} />
+        ${isFontFamily ? `<button type="button" class="icon-btn fp-chevron-btn"
+                data-font-picker-trigger="token-value-input"
+                title="Browse fonts">${CHEV_DOWN}</button></div>` : ""}
         <button type="button" class="icon-btn value-alias-trigger" id="value-alias-trigger-btn"
                 title="Insert alias reference" data-token-type="${esc(type)}">
           ${VALUE_ALIAS_INSERT_ICON}
@@ -2067,12 +2432,14 @@ function showNewTokenModal(initialType = "color"): void {
 
   if (initialType === "color") bindColorSwatchPreview();
   bindValueAliasTrigger();
+  bindFontPicker();
 
   // Update fields when type changes
   const typeSelect = el<HTMLSelectElement>("token-type-select");
   typeSelect.addEventListener("change", () => {
     const newType = typeSelect.value;
     closeModalAliasPicker();
+    closeFontPicker();
     el("token-modal-title").textContent =
       `CREATE NEW ${getTypeDef(newType).label.toUpperCase()} TOKEN`;
     const nameInput = el<HTMLInputElement>("token-name-input");
@@ -2080,6 +2447,7 @@ function showNewTokenModal(initialType = "color"): void {
     el("token-value-section").innerHTML = buildValueSection(newType);
     if (newType === "color") bindColorSwatchPreview();
     bindValueAliasTrigger();
+    bindFontPicker();
   });
 
   // Save
@@ -2160,6 +2528,7 @@ function showEditTokenModal(token: SerializedToken): void {
 
   if (token.type === "color") bindColorSwatchPreview();
   bindValueAliasTrigger();
+  bindFontPicker();
 
   el("confirm-edit-token-btn").addEventListener("click", () => {
     const name = el<HTMLInputElement>("edit-token-name")?.value?.trim();
