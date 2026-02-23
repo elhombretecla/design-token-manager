@@ -2,6 +2,8 @@
 
 A full-featured design token manager plugin for Penpot. Create, organize, and maintain your design tokens directly inside Penpot without leaving the workspace.
 
+<img width="1497" height="888" alt="coverplugin" src="https://github.com/user-attachments/assets/74ce2b02-d053-4241-aef5-b5673d297c25" />
+
 ## Features
 
 - **Token Sets**: Create and manage multiple token sets, organized in groups using `/` separators
