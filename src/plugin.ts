@@ -94,15 +94,24 @@ function serializeSet(set: ITokenSet) {
 }
 
 function serializeToken(token: IToken) {
+  // resolvedValue is computed by Penpot's tokenscript engine at read time.
+  // On a freshly created token the engine may not have run yet, causing the
+  // proxy getter to throw internally.  We treat any error as "not resolved".
+  let resolvedValue: string | undefined;
+  try {
+    resolvedValue = token.resolvedValue != null
+      ? valueToString(token.resolvedValue)
+      : undefined;
+  } catch {
+    resolvedValue = undefined;
+  }
   return {
     id: token.id,
-    name: token.name,
-    type: token.type,
+    name: token.name ?? "",
+    type: token.type ?? "",
     value: valueToString(token.value),
     description: token.description ?? "",
-    resolvedValue: token.resolvedValue != null
-      ? valueToString(token.resolvedValue)
-      : undefined,
+    resolvedValue,
   };
 }
 
@@ -285,8 +294,16 @@ penpot.ui.onMessage((message: unknown) => {
           description: original.description ?? "",
         });
 
-        broadcastTokens(setId);
-        broadcastSets();
+        // Penpot's tokenscript engine resolves token values asynchronously
+        // after addToken returns.  Accessing any proxy property (value,
+        // resolvedValue, name…) in the same synchronous tick puts the engine
+        // in an inconsistent state and throws "Cannot read properties of null
+        // (reading 'value')".  A single-tick defer lets the engine settle so
+        // broadcastTokens can safely serialize the complete, updated set.
+        setTimeout(() => {
+          broadcastTokens(setId);
+          broadcastSets();
+        }, 0);
         break;
       }
 

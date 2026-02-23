@@ -456,11 +456,11 @@ function getSortedTokens(tokens: SerializedToken[]): SerializedToken[] {
     const av = (key === "resolvedValue"
       ? (a.resolvedValue ?? a.value)
       : a[key]
-    ).toLowerCase();
+    )?.toLowerCase() ?? "";
     const bv = (key === "resolvedValue"
       ? (b.resolvedValue ?? b.value)
       : b[key]
-    ).toLowerCase();
+    )?.toLowerCase() ?? "";
     return av < bv ? -dir : av > bv ? dir : 0;
   });
 }
