@@ -1202,9 +1202,7 @@ function showTokenContextMenu(e: MouseEvent, token: SerializedToken): void {
           sendToPlugin({
             type: "duplicate-token",
             setId: state.selectedSetId,
-            tokenName: token.name,
-            tokenType: token.type,
-            tokenValue: token.value,
+            tokenId: token.id,
           });
         }
       },
@@ -2275,17 +2273,10 @@ function handleBulkMove(ids: Set<string>): void {
 function handleBulkDuplicate(ids: Set<string>): void {
   if (!state.selectedSetId) return;
   const setId = state.selectedSetId;
-  // Send serialized token data — non-blocking (postMessage is FIFO)
+  // Each message carries only the tokenId; the plugin fetches live data from
+  // the Penpot API so composite values (shadow, typography) are never stale.
   ids.forEach((tokenId) => {
-    const token = state.tokens.find((t) => t.id === tokenId);
-    if (!token) return;
-    sendToPlugin({
-      type: "duplicate-token",
-      setId,
-      tokenName: token.name,
-      tokenType: token.type,
-      tokenValue: token.value,
-    });
+    sendToPlugin({ type: "duplicate-token", setId, tokenId });
   });
   selectedTokenIds.clear();
   renderBulkBar();
@@ -2294,10 +2285,30 @@ function handleBulkDuplicate(ids: Set<string>): void {
 function handleBulkDelete(ids: Set<string>): void {
   if (!state.selectedSetId) return;
   const setId = state.selectedSetId;
-  // Send all delete messages — non-blocking (postMessage is FIFO)
-  ids.forEach((tokenId) => sendToPlugin({ type: "delete-token", setId, tokenId }));
-  selectedTokenIds.clear();
-  renderBulkBar();
+  const count = ids.size;
+
+  showModal(`
+    <div class="modal-header">
+      <h2 class="modal-title">Delete ${count} token${count === 1 ? "" : "s"}</h2>
+      ${CLOSE_BTN_SVG}
+    </div>
+    <div class="modal-body">
+      <p class="body-s">
+        Are you sure you want to delete <strong>${count} token${count === 1 ? "" : "s"}</strong>?
+        This action cannot be undone.
+      </p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" data-appearance="secondary" data-modal-close>Cancel</button>
+      <button type="button" data-appearance="primary" data-variant="destructive"
+              id="confirm-bulk-delete-btn">Delete</button>
+    </div>`);
+
+  el("confirm-bulk-delete-btn").addEventListener("click", () => {
+    ids.forEach((tokenId) => sendToPlugin({ type: "delete-token", setId, tokenId }));
+    selectedTokenIds.clear();
+    closeModal();
+  });
 }
 
 // ════════════════════════════════════════════════════════════════════════

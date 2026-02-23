@@ -38,7 +38,7 @@ interface ITokenSet {
   readonly tokensByType: [string, IToken[]][];
   toggleActive(): void;
   getTokenById(id: string): IToken | undefined;
-  addToken(args: { type: string; name: string; value: string }): IToken;
+  addToken(args: { type: string; name: string; value: string | object; description?: string }): IToken;
   duplicate(): ITokenSet;
   remove(): void;
 }
@@ -248,27 +248,41 @@ penpot.ui.onMessage((message: unknown) => {
       // ── Duplicate token ───────────────────────────────────────────────
       case "duplicate-token": {
         const setId = msg.setId as string;
+        const tokenId = msg.tokenId as string;
         const set = cat.getSetById(setId);
         if (!set) throw new Error(`Set not found: ${setId}`);
 
-        const originalName = msg.tokenName as string;
+        // Fetch the token fresh from the live Penpot API rather than trusting
+        // the UI's serialised snapshot.  For composite types (shadow, typography)
+        // the live `value` is a plain JS object; the UI snapshot is a pre-stringified
+        // copy that can corrupt the token if fed back into addToken directly.
+        const original = set.getTokenById(tokenId);
+        if (!original) throw new Error(`Token not found: ${tokenId}`);
 
-        // Avoid name collisions — build the set of existing names once
-        const existingNames = new Set(
-          Array.from(set.tokens).map((t) => t.name)
-        );
-        let copyName = `${originalName} copy`;
+        // Deep-clone the raw value.  For simple string tokens (color, spacing…)
+        // this is a no-op.  For composite objects the JSON round-trip produces a
+        // fully detached copy, preserving the entire nested structure and any alias
+        // references (e.g. "{color.red}") verbatim.
+        const rawValue = original.value as unknown;
+        const clonedValue: string | object =
+          typeof rawValue === "object" && rawValue !== null
+            ? (JSON.parse(JSON.stringify(rawValue)) as object)
+            : (rawValue as string);
+
+        // Resolve a unique name against the *live* token list — not the UI
+        // snapshot — so stale UI state can never cause an API name collision.
+        const existingNames = new Set(set.tokens.map((t) => t.name));
+        let copyName = `${original.name}-copy`;
         let counter = 2;
         while (existingNames.has(copyName)) {
-          copyName = `${originalName} copy ${counter++}`;
+          copyName = `${original.name}-copy-${counter++}`;
         }
 
-        // Use the already-serialised data sent from the UI so the value
-        // format matches exactly what addToken originally received.
         set.addToken({
-          type: msg.tokenType as string,
+          type: original.type,
           name: copyName,
-          value: msg.tokenValue as string,
+          value: clonedValue,
+          description: original.description ?? "",
         });
 
         broadcastTokens(setId);
