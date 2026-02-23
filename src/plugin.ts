@@ -84,6 +84,24 @@ function valueToString(v: unknown): string {
   return JSON.stringify(v);
 }
 
+// Composite token types (typography, shadow) must be passed to addToken as
+// plain objects, not JSON strings.  If Penpot receives a string that starts
+// with "{" it treats the whole thing as an alias reference (like
+// "{color.primary}") and reports :missing-reference.
+// Pure alias strings are not valid JSON so JSON.parse throws → returned as-is.
+function tryParseObject(value: string): string | object {
+  const s = (value ?? "").trim();
+  if (s.startsWith("{") && s.endsWith("}")) {
+    try {
+      const parsed: unknown = JSON.parse(s);
+      if (typeof parsed === "object" && parsed !== null) return parsed as object;
+    } catch {
+      // Not valid JSON — alias reference like "{color.primary}", leave as string
+    }
+  }
+  return value ?? "";
+}
+
 function serializeSet(set: ITokenSet) {
   return {
     id: set.id,
@@ -221,10 +239,19 @@ penpot.ui.onMessage((message: unknown) => {
         set.addToken({
           type: msg.tokenType as string,
           name: msg.name as string,
-          value: msg.value as string,
+          // tryParseObject converts a JSON string like {"fontFamily":"Inter",...}
+          // into a real object.  Penpot must receive an object for composite
+          // types; a raw JSON string is misread as an alias reference.
+          value: tryParseObject(msg.value as string),
+          description: msg.description as string ?? "",
         });
-        broadcastTokens(setId);
-        broadcastSets(); // update token count in sidebar
+        // Defer broadcast by one tick — same reason as duplicate-token:
+        // accessing the proxy synchronously after addToken crashes the
+        // tokenscript resolution engine.
+        setTimeout(() => {
+          broadcastTokens(setId);
+          broadcastSets();
+        }, 0);
         break;
       }
 
@@ -339,7 +366,11 @@ penpot.ui.onMessage((message: unknown) => {
         toSet.addToken({
           type: token.type,
           name: token.name,
-          value: valueToString(token.value),
+          // Pass the live value directly — already the right type (object for
+          // shadow/typography, string for everything else).  Stringifying it
+          // would make Penpot misread the JSON object as an alias reference.
+          value: token.value as string | object,
+          description: token.description ?? "",
         });
 
         if (!copy) token.remove();
