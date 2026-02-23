@@ -1,0 +1,13 @@
+{
+  "name": "Design Token Manager",
+  "code": "plugin.js",
+  "icon": "/icon.png",
+  "description": "A comprehensive Design Token Manager for Penpot. Create, edit, and organize token sets, tokens, and themes.",
+  "host": "http://localhost:4400",
+  "permissions": [
+    "content:read",
+    "content:write",
+    "library:read",
+    "library:write"
+  ]
+}
