@@ -606,7 +606,133 @@ function inlineAliasChipHtml(aliasName: string, parentTokenId: string, broken: b
   return `<div class="alias-chip alias-chip--inline" data-token-id="${esc(parentTokenId)}" title="{${esc(aliasName)}}" role="button" tabindex="0" aria-label="Alias: ${esc(aliasName)}"><span class="alias-chip-name">${esc(aliasName)}</span>${ALIAS_GEAR_ICON}</div>`;
 }
 
+// ── Composite token preview ───────────────────────────────────────────────
+//  Renders a compact multi-property summary for composite token types
+//  (typography, shadow).  Each sub-value goes through compositeSubValueHtml
+//  so alias references get rendered as mini alias chips.
+
+interface CompositePropDef {
+  key: string;
+  label: string;
+  iconKey: string;
+}
+
+// Keys must match the canonical TokenTypographyValueString shape
+// (fontFamilies / fontSizes are plural – same as the Penpot plugin API).
+const TYPOGRAPHY_PROP_ORDER: CompositePropDef[] = [
+  { key: "fontFamilies",   label: "Family",      iconKey: "fontFamilies"   },
+  { key: "fontSizes",      label: "Size",        iconKey: "fontSizes"      },
+  { key: "fontWeight",     label: "Weight",      iconKey: "fontWeights"    },
+  { key: "lineHeight",     label: "Line Height", iconKey: "dimension"      },
+  { key: "letterSpacing",  label: "Spacing",     iconKey: "letterSpacing"  },
+  { key: "textCase",       label: "Case",        iconKey: "textCase"       },
+  { key: "textDecoration", label: "Decoration",  iconKey: "textDecoration" },
+];
+
+/** Render one sub-property value: alias chip (mini), mixed, or plain text. */
+function compositeSubValueHtml(value: string): string {
+  if (!value) return `<span class="cprop-val cprop-val--muted">—</span>`;
+
+  if (isAlias(value)) {
+    const name = value.trim().slice(1, -1);
+    return `<span class="alias-chip alias-chip--mini" title="${esc(value)}"><span class="alias-chip-name">${esc(name)}</span></span>`;
+  }
+
+  if (/\{[^{}]+\}/.test(value)) {
+    // Mixed value: plain text interleaved with {alias} references
+    const parts = parseMixedValue(value).map((seg) => {
+      if (seg.kind === "alias") {
+        return `<span class="alias-chip alias-chip--mini" title="{${esc(seg.name)}}"><span class="alias-chip-name">${esc(seg.name)}</span></span>`;
+      }
+      return `<span class="cprop-val">${esc(seg.content)}</span>`;
+    });
+    return parts.join("");
+  }
+
+  return `<span class="cprop-val">${esc(value)}</span>`;
+}
+
+const COMPOSITE_MAX_VISIBLE = 4;
+
+function compositeTypographyPreviewHtml(vals: Record<string, string>): string {
+  const entries = TYPOGRAPHY_PROP_ORDER
+    .map(({ key, label, iconKey }) => ({
+      label,
+      icon: TOKEN_TYPE_ICONS[iconKey] ?? "",
+      value: vals[key] ?? "",
+    }))
+    // Skip empty, "none", "normal" to keep the preview compact
+    .filter(({ value }) => value !== "" && value !== "none" && value !== "normal");
+
+  if (entries.length === 0) {
+    return `<span class="composite-empty">—</span>`;
+  }
+
+  const visible = entries.slice(0, COMPOSITE_MAX_VISIBLE);
+  const hidden  = entries.slice(COMPOSITE_MAX_VISIBLE);
+
+  const items = visible
+    .map(({ label, icon, value }) =>
+      `<span class="cprop" title="${esc(label)}: ${esc(value)}">${icon}${compositeSubValueHtml(value)}</span>`
+    )
+    .join("");
+
+  const moreHint =
+    hidden.length > 0
+      ? `<span class="cprop-more" title="${esc(hidden.map((e) => `${e.label}: ${e.value}`).join(", "))}">+${hidden.length}</span>`
+      : "";
+
+  return `<div class="composite-preview">${items}${moreHint}</div>`;
+}
+
+function compositeShadowPreviewHtml(vals: Record<string, string>): string {
+  if (!vals || Object.keys(vals).length === 0) {
+    return `<span class="composite-empty">—</span>`;
+  }
+  const parts: string[] = [];
+  if (vals.type && vals.type !== "drop-shadow") {
+    parts.push(`<span class="cprop-badge">${esc(vals.type)}</span>`);
+  }
+  if (vals.color) {
+    parts.push(`<span class="color-swatch" style="background:${esc(vals.color)}" aria-hidden="true"></span>`);
+  }
+  const xy = [vals.x, vals.y].filter(Boolean).join(" ");
+  if (xy) {
+    parts.push(
+      `<span class="cprop" title="X Y">${TOKEN_TYPE_ICONS.dimension}<span class="cprop-val">${esc(xy)}</span></span>`
+    );
+  }
+  if (vals.blur) {
+    parts.push(
+      `<span class="cprop" title="Blur: ${esc(vals.blur)}">${TOKEN_TYPE_ICONS.opacity}<span class="cprop-val">${esc(vals.blur)}</span></span>`
+    );
+  }
+  return `<div class="composite-preview">${parts.join("")}</div>`;
+}
+
+/** Render the "Resolved value" cell, with composite-aware formatting. */
+function resolvedValueCellHtml(token: SerializedToken): string {
+  const raw = token.resolvedValue ?? token.value;
+  if (token.type === "typography") {
+    const vals = parseCompositeToken(raw);
+    return compositeTypographyPreviewHtml(vals);
+  }
+  if (token.type === "shadow") {
+    const vals = parseCompositeToken(raw);
+    return compositeShadowPreviewHtml(vals);
+  }
+  return `<span class="token-resolved-text" title="${esc(raw)}">${esc(raw)}</span>`;
+}
+
 function valueCellHtml(token: SerializedToken): string {
+  // Composite types: render structured preview instead of raw JSON
+  if (token.type === "typography") {
+    return compositeTypographyPreviewHtml(parseCompositeToken(token.value));
+  }
+  if (token.type === "shadow") {
+    return compositeShadowPreviewHtml(parseCompositeToken(token.value));
+  }
+
   // Pure alias: entire value is a single {reference}
   if (isAlias(token.value)) return aliasChipHtml(token);
 
@@ -1171,10 +1297,7 @@ function renderTokenTable(): void {
         </div>
       </div>
       <div class="tcol-resolved">
-        <span class="token-resolved-text"
-              title="${esc(token.resolvedValue ?? token.value)}">
-          ${esc(token.resolvedValue ?? token.value)}
-        </span>
+        ${resolvedValueCellHtml(token)}
       </div>
       <div class="tcol-type">
         <div class="col-type-inner">
@@ -1879,16 +2002,22 @@ function shadowFieldsHtml(x = "0", y = "4", blur = "8", spread = "0", color = "r
     </div>`;
 }
 
-// Builds the value fields section for typography tokens
+// Builds the value fields section for typography tokens.
+// `vals` uses the canonical TokenTypographyValueString keys (fontFamilies,
+// fontSizes, …).  The singular fallbacks (fontFamily, fontSize) handle any
+// legacy tokens created before the API-key rename, so the edit modal never
+// shows empty fields on old data.
 function typographyFieldsHtml(vals: Record<string, string> = {}): string {
-  const v = (k: string, fallback = "") => esc(vals[k] ?? fallback);
+  // v() looks up the canonical key first, then a legacy alias, then fallback.
+  const v = (k: string, alt = "", fallback = "") =>
+    esc(vals[k] ?? (alt ? vals[alt] : undefined) ?? fallback);
   return `
     <div class="typo-grid">
       <div class="form-field">
         <label class="form-label" for="typo-family">Font Family</label>
         <div class="value-input-wrapper">
           <input type="text" class="input form-input has-fp-chevron" id="typo-family"
-                 value="${v("fontFamily")}" placeholder="Inter"
+                 value="${v("fontFamilies", "fontFamily")}" placeholder="Inter"
                  data-font-picker="true" autocomplete="off" />
           <button type="button" class="icon-btn fp-chevron-btn"
                   data-font-picker-trigger="typo-family"
@@ -1898,7 +2027,7 @@ function typographyFieldsHtml(vals: Record<string, string> = {}): string {
       <div class="form-field">
         <label class="form-label" for="typo-size">Font Size</label>
         <input type="text" class="input form-input" id="typo-size"
-               value="${v("fontSize")}" placeholder="16px" />
+               value="${v("fontSizes", "fontSize")}" placeholder="16px" />
       </div>
       <div class="form-field">
         <label class="form-label" for="typo-weight">Font Weight</label>
@@ -1973,16 +2102,63 @@ function readShadowValue(): string {
   });
 }
 
+/**
+ * Allowed keys for the Penpot TokenTypographyValueString shape.
+ * Any key outside this set is dropped by sanitizeTypographyValueForApi.
+ */
+const TYPOGRAPHY_API_KEYS = new Set([
+  "fontFamilies",
+  "fontSizes",
+  "fontWeight",
+  "lineHeight",
+  "letterSpacing",
+  "textCase",
+  "textDecoration",
+]);
+
+/**
+ * Sanitize a raw form-field map before sending it to the plugin API.
+ *
+ * Rules (from TokenTypographyValueString schema):
+ *   • Drop keys not in TYPOGRAPHY_API_KEYS.
+ *   • Drop any key whose value is an empty string — Penpot's schema
+ *     rejects "" (token_value_empty_fn) for numeric fields like fontWeight,
+ *     lineHeight, letterSpacing.  Omitting the key lets Penpot apply its
+ *     own default.
+ *   • Values that are alias references ("{font.size.20}") are kept as-is.
+ *   • fontFamilies accepts string | string[]; we keep it as a plain string
+ *     here because the form always holds a single family name.
+ */
+function sanitizeTypographyValueForApi(
+  raw: Record<string, string>
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (!TYPOGRAPHY_API_KEYS.has(k)) continue;  // unknown key
+    if (v == null || v === "")       continue;  // empty → let Penpot default
+    out[k] = v;
+  }
+  if (typeof window !== "undefined" && (window as any).__DTM_DEBUG__) {
+    console.debug("[DTM] typography API payload:", JSON.stringify(out));
+  }
+  return out;
+}
+
 function readTypographyValue(): string {
-  return JSON.stringify({
-    fontFamily: el<HTMLInputElement>("typo-family")?.value ?? "",
-    fontSize: el<HTMLInputElement>("typo-size")?.value ?? "",
-    fontWeight: el<HTMLInputElement>("typo-weight")?.value ?? "",
-    lineHeight: el<HTMLInputElement>("typo-line-height")?.value ?? "",
-    letterSpacing: el<HTMLInputElement>("typo-letter-spacing")?.value ?? "",
-    textCase: el<HTMLSelectElement>("typo-text-case")?.value ?? "none",
-    textDecoration: el<HTMLSelectElement>("typo-text-decoration")?.value ?? "none",
-  });
+  // Collect raw values from the form using the canonical API key names.
+  // fontFamilies / fontSizes use the plural form required by
+  // TokenTypographyValueString.  Empty strings are stripped by the
+  // sanitizer so Penpot never receives token_value_empty_fn errors.
+  const raw: Record<string, string> = {
+    fontFamilies:   el<HTMLInputElement>("typo-family")?.value       ?? "",
+    fontSizes:      el<HTMLInputElement>("typo-size")?.value         ?? "",
+    fontWeight:     el<HTMLInputElement>("typo-weight")?.value       ?? "",
+    lineHeight:     el<HTMLInputElement>("typo-line-height")?.value  ?? "",
+    letterSpacing:  el<HTMLInputElement>("typo-letter-spacing")?.value ?? "",
+    textCase:       el<HTMLSelectElement>("typo-text-case")?.value   ?? "",
+    textDecoration: el<HTMLSelectElement>("typo-text-decoration")?.value ?? "",
+  };
+  return JSON.stringify(sanitizeTypographyValueForApi(raw));
 }
 
 function readTokenValue(type: string): string {
@@ -2481,21 +2657,84 @@ function showNewTokenModal(initialType = "color"): void {
 //  MODAL: EDIT TOKEN
 // ════════════════════════════════════════════════════════════════════════
 
-function parseShadowValue(raw: string): Record<string, string> {
-  try { return JSON.parse(raw); } catch { return {}; }
+// ── Composite token value parser ─────────────────────────────────────────
+//  Handles multiple possible serialisation formats that Penpot may return:
+//   • Canonical API JSON:        {"fontFamilies":"Inter","fontSizes":"16px",...}
+//   • Penpot kebab-case JSON:    {"font-family":"Inter","font-size":"16px",...}
+//   • ClojureScript Transit keys: {"~:font-family":"Inter",...}
+//   • Transit metadata wrapper:  {"$meta$":null,"$cnt$":7,"~:font-family":"Inter",...}
+//   • Array field values         → first element coerced to string
+//  All keys are normalised to the canonical TokenTypographyValueString names
+//  (fontFamilies, fontSizes, fontWeight, lineHeight, letterSpacing, textCase,
+//  textDecoration) via normalizeCompositeKey().
+//  Returns {} on any failure – never throws.
+
+/**
+ * Normalise a single key from any source format to the canonical
+ * TokenTypographyValueString key names used by the Penpot plugin API.
+ *
+ * Handles:
+ *   Transit prefix  "~:font-family"  → strip "~:"  → "font-family"
+ *   kebab-case      "font-family"    → camelCase   → "fontFamily"
+ *   singular plural "fontFamily"     → remap       → "fontFamilies"
+ *                   "fontSize"       → remap       → "fontSizes"
+ *
+ * The two remap entries are necessary because the API type
+ * TokenTypographyValueString spells the keys as fontFamilies (plural)
+ * and fontSizes (plural), while Penpot's internal EDN uses font-family /
+ * font-size (which would naively camelCase to fontFamily / fontSize).
+ */
+function normalizeCompositeKey(k: string): string {
+  // 1. Strip Transit "~:" / "~#" prefix
+  const stripped = k.startsWith("~:") || k.startsWith("~#") ? k.slice(2) : k;
+  // 2. kebab-case → camelCase  ("font-family" → "fontFamily")
+  const camel = stripped.replace(/-([a-z])/g, (_: string, c: string) => c.toUpperCase());
+  // 3. Map the two irregular singular forms to their plural API counterparts
+  if (camel === "fontFamily")  return "fontFamilies";
+  if (camel === "fontSize")    return "fontSizes";
+  return camel;
 }
 
-function parseTypographyValue(raw: string): Record<string, string> {
-  try { return JSON.parse(raw); } catch { return {}; }
+function parseCompositeToken(raw: string): Record<string, string> {
+  if (!raw) return {};
+  const s = raw.trim();
+  // Must be an object literal, not an alias reference like {color.primary}
+  if (!s.startsWith("{") || !s.endsWith("}")) return {};
+
+  let obj: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(s) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    obj = parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+
+  const result: Record<string, string> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    // Skip Transit infrastructure keys: $meta$, $cnt$, $arr$, $key$, etc.
+    if (k.startsWith("$")) continue;
+    const normalKey = normalizeCompositeKey(k);
+    if (!normalKey) continue;
+    // Coerce value: arrays → first element; null/undefined → ""
+    if (Array.isArray(v)) {
+      result[normalKey] = v.length > 0 ? String(v[0]) : "";
+    } else if (v !== null && v !== undefined) {
+      result[normalKey] = String(v);
+    } else {
+      result[normalKey] = "";
+    }
+  }
+  return result;
 }
 
 function buildEditValueSection(token: SerializedToken): string {
   if (token.type === "shadow") {
-    const v = parseShadowValue(token.value);
+    const v = parseCompositeToken(token.value);
     return shadowFieldsHtml(v.x, v.y, v.blur, v.spread, v.color, v.type);
   }
   if (token.type === "typography") {
-    return typographyFieldsHtml(parseTypographyValue(token.value));
+    return typographyFieldsHtml(parseCompositeToken(token.value));
   }
   return simpleValueFieldHtml(token.type, token.value);
 }

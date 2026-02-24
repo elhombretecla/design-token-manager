@@ -664,6 +664,100 @@ html.col-resizing * {
   flex: none;
 }
 
+/* Mini alias chip — used inside composite (typography/shadow) preview cells.
+   Non-interactive read-only display; no gear icon or hover state. */
+.alias-chip--mini {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  height: 15px;
+  border-radius: 3px;
+  background-color: var(--background-tertiary);
+  border: 1px solid var(--background-quaternary);
+  max-width: 90px;
+  flex-shrink: 0;
+  cursor: default;
+}
+
+.alias-chip--mini .alias-chip-name {
+  font-size: 10px;
+  color: var(--accent-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 80px;
+}
+
+/* ── Composite token preview ─────────────────────────────────────────────
+   Compact multi-property summary shown in Value and Resolved Value columns
+   for composite token types (typography, shadow).
+   ───────────────────────────────────────────────────────────────────────── */
+
+.composite-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 5px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* One sub-property pill: icon + value */
+.cprop {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.cprop > svg {
+  flex-shrink: 0;
+  color: var(--foreground-secondary);
+  opacity: 0.7;
+}
+
+.cprop-val {
+  font-size: var(--font-size-s);
+  color: var(--foreground-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 68px;
+}
+
+.cprop-val--muted {
+  color: var(--foreground-secondary);
+}
+
+/* "+N more" hint shown when there are more properties than MAX_VISIBLE */
+.cprop-more {
+  font-size: 10px;
+  color: var(--foreground-secondary);
+  padding: 0 2px;
+  cursor: default;
+  flex-shrink: 0;
+}
+
+/* Badge for non-default shadow type ("inner-shadow") */
+.cprop-badge {
+  font-size: 10px;
+  color: var(--foreground-secondary);
+  background-color: var(--background-tertiary);
+  border: 1px solid var(--background-quaternary);
+  border-radius: 3px;
+  padding: 0 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Empty state shown when a composite token has no parseable sub-values */
+.composite-empty {
+  font-size: var(--font-size-s);
+  color: var(--foreground-secondary);
+  font-style: italic;
+}
+
 /* ── Mixed-value cell ───────────────────────────────────────────────────── */
 .mixed-value-cell {
   display: flex;

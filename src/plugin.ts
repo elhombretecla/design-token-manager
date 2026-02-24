@@ -264,16 +264,21 @@ penpot.ui.onMessage((message: unknown) => {
         const token = set.tokens.find((t) => t.id === (msg.tokenId as string));
         if (!token) throw new Error(`Token not found: ${msg.tokenId}`);
 
+        // For composite types (typography, shadow) the value arrives as a JSON
+        // string from the UI.  Penpot needs a plain object, not a string that
+        // happens to look like JSON.  tryParseObject handles the conversion.
+        const parsedValue = tryParseObject(msg.value as string);
+
         if (typeof token.update === "function") {
           token.update({
             name: msg.name as string,
-            value: msg.value as string,
+            value: parsedValue as string,
             description: msg.description as string,
           });
         } else {
           // Fallback: mutate properties directly
           token.name = msg.name as string;
-          token.value = msg.value as string;
+          token.value = parsedValue as string;
           token.description = msg.description as string;
         }
 
