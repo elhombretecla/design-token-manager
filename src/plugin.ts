@@ -407,8 +407,8 @@ penpot.ui.onMessage((message: unknown) => {
         try {
           if (penpot.root) {
             // find() traverses the full shape tree depth-first
-            const textNodes = penpot.root.find(
-              (node) => (node as any).type === "text"
+            const textNodes = (penpot.root as any).find(
+              (node: any) => node.type === "text"
             );
             for (const node of textNodes ?? []) {
               const n = node as any;
