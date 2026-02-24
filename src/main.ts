@@ -95,6 +95,11 @@ function el<T extends HTMLElement>(id: string): T {
   return document.getElementById(id) as T;
 }
 
+// Send a message to the plugin sandbox (plugin.ts).
+// The plugin UI runs in an iframe; `penpot` is NOT available here — it only
+// exists in the plugin sandbox context.  The correct channel is
+// parent.postMessage, which Penpot's host intercepts and forwards to the
+// plugin via penpot.ui.onMessage.
 function sendToPlugin(message: object): void {
   parent.postMessage(message, "*");
 }
@@ -617,11 +622,11 @@ interface CompositePropDef {
   iconKey: string;
 }
 
-// Keys must match the canonical TokenTypographyValueString shape
-// (fontFamilies / fontSizes are plural – same as the Penpot plugin API).
+// Keys match the UI "form" shape produced by normalizeTypographyValueToForm:
+// fontFamily / fontSize (singular) for the two irregular fields.
 const TYPOGRAPHY_PROP_ORDER: CompositePropDef[] = [
-  { key: "fontFamilies",   label: "Family",      iconKey: "fontFamilies"   },
-  { key: "fontSizes",      label: "Size",        iconKey: "fontSizes"      },
+  { key: "fontFamily",     label: "Family",      iconKey: "fontFamilies"   },
+  { key: "fontSize",       label: "Size",        iconKey: "fontSizes"      },
   { key: "fontWeight",     label: "Weight",      iconKey: "fontWeights"    },
   { key: "lineHeight",     label: "Line Height", iconKey: "dimension"      },
   { key: "letterSpacing",  label: "Spacing",     iconKey: "letterSpacing"  },
@@ -714,20 +719,20 @@ function compositeShadowPreviewHtml(vals: Record<string, string>): string {
 function resolvedValueCellHtml(token: SerializedToken): string {
   const raw = token.resolvedValue ?? token.value;
   if (token.type === "typography") {
-    const vals = parseCompositeToken(raw);
-    return compositeTypographyPreviewHtml(vals);
+    return compositeTypographyPreviewHtml(normalizeTypographyValueToForm(raw));
   }
   if (token.type === "shadow") {
-    const vals = parseCompositeToken(raw);
-    return compositeShadowPreviewHtml(vals);
+    return compositeShadowPreviewHtml(parseCompositeToken(raw));
   }
   return `<span class="token-resolved-text" title="${esc(raw)}">${esc(raw)}</span>`;
 }
 
 function valueCellHtml(token: SerializedToken): string {
-  // Composite types: render structured preview instead of raw JSON
+  // Composite types: render structured preview instead of raw JSON.
+  // Both table and modal now go through the same normalizeTypographyValueToForm
+  // adapter so key names are always consistent.
   if (token.type === "typography") {
-    return compositeTypographyPreviewHtml(parseCompositeToken(token.value));
+    return compositeTypographyPreviewHtml(normalizeTypographyValueToForm(token.value));
   }
   if (token.type === "shadow") {
     return compositeShadowPreviewHtml(parseCompositeToken(token.value));
@@ -2003,21 +2008,22 @@ function shadowFieldsHtml(x = "0", y = "4", blur = "8", spread = "0", color = "r
 }
 
 // Builds the value fields section for typography tokens.
-// `vals` uses the canonical TokenTypographyValueString keys (fontFamilies,
-// fontSizes, …).  The singular fallbacks (fontFamily, fontSize) handle any
-// legacy tokens created before the API-key rename, so the edit modal never
-// shows empty fields on old data.
+// `vals` is produced by normalizeTypographyValueToForm → always uses the
+// UI-form key names: fontFamily, fontSize (singular), fontWeight, etc.
 function typographyFieldsHtml(vals: Record<string, string> = {}): string {
-  // v() looks up the canonical key first, then a legacy alias, then fallback.
-  const v = (k: string, alt = "", fallback = "") =>
-    esc(vals[k] ?? (alt ? vals[alt] : undefined) ?? fallback);
+  // ── Debug log C ──────────────────────────────────────────────────────────
+  if (import.meta.env.DEV) {
+    console.debug("[DTM-C] typographyFieldsHtml vals:", vals);
+  }
+
+  const v = (k: string) => esc(vals[k] ?? "");
   return `
     <div class="typo-grid">
       <div class="form-field">
         <label class="form-label" for="typo-family">Font Family</label>
         <div class="value-input-wrapper">
           <input type="text" class="input form-input has-fp-chevron" id="typo-family"
-                 value="${v("fontFamilies", "fontFamily")}" placeholder="Inter"
+                 value="${v("fontFamily")}" placeholder="Inter"
                  data-font-picker="true" autocomplete="off" />
           <button type="button" class="icon-btn fp-chevron-btn"
                   data-font-picker-trigger="typo-family"
@@ -2027,7 +2033,7 @@ function typographyFieldsHtml(vals: Record<string, string> = {}): string {
       <div class="form-field">
         <label class="form-label" for="typo-size">Font Size</label>
         <input type="text" class="input form-input" id="typo-size"
-               value="${v("fontSizes", "fontSize")}" placeholder="16px" />
+               value="${v("fontSize")}" placeholder="16px" />
       </div>
       <div class="form-field">
         <label class="form-label" for="typo-weight">Font Weight</label>
@@ -2138,8 +2144,8 @@ function sanitizeTypographyValueForApi(
     if (v == null || v === "")       continue;  // empty → let Penpot default
     out[k] = v;
   }
-  if (typeof window !== "undefined" && (window as any).__DTM_DEBUG__) {
-    console.debug("[DTM] typography API payload:", JSON.stringify(out));
+  if (import.meta.env.DEV) {
+    console.debug("[DTM] sanitized API payload:", JSON.stringify(out));
   }
   return out;
 }
@@ -2670,6 +2676,229 @@ function showNewTokenModal(initialType = "color"): void {
 //  Returns {} on any failure – never throws.
 
 /**
+ * Convert a ClojureScript/Transit proxy structure to a plain JS object or
+ * array so downstream key lookups work normally.
+ *
+ * Penpot stores typography values as ClojureScript PersistentHashMaps.  When
+ * serialised via JSON.stringify the proxy emits an opaque internal layout:
+ *
+ *   { "$meta$": null, "$cnt$": N, "$arr$": [keyObj, val, keyObj, val, …] }
+ *
+ * where each keyObj is a CLJS keyword object:
+ *   { ns: null, name: "font-size", "$fqn$": "font-size", … }
+ *
+ * A PersistentVector (e.g. the font-family list) serialises as:
+ *   { "$meta$": null, "$cnt$": N, "$arr$": ["Inter", …] }   (primitive items)
+ *
+ * This function recursively flattens both shapes:
+ *   Transit map    → plain object  { "font-size": "…", "font-family": "Inter" }
+ *   Transit vector → plain array   ["Inter"]
+ *   Everything else → returned as-is (strings, numbers, alias refs …)
+ */
+function transitToPlain(val: unknown): unknown {
+  if (val === null || val === undefined || typeof val !== "object") return val;
+
+  if (Array.isArray(val)) {
+    return val.map(transitToPlain);
+  }
+
+  const obj = val as Record<string, unknown>;
+
+  // Detect transit map / vector: must have a $arr$ array.
+  if (Array.isArray(obj.$arr$)) {
+    const arr = obj.$arr$ as unknown[];
+
+    // Distinguish map (even-indexed items are keyword objects) from vector
+    // (all items are plain values).  An empty $arr$ → empty map.
+    const firstEl = arr[0];
+    const isMap =
+      firstEl !== null &&
+      typeof firstEl === "object" &&
+      !Array.isArray(firstEl) &&
+      (typeof (firstEl as Record<string, unknown>).$fqn$ === "string" ||
+       typeof (firstEl as Record<string, unknown>).name  === "string");
+
+    if (isMap) {
+      // Map: iterate key/value pairs
+      const result: Record<string, unknown> = {};
+      for (let i = 0; i + 1 < arr.length; i += 2) {
+        const k = arr[i] as Record<string, unknown>;
+        const keyStr =
+          (typeof k.$fqn$ === "string" && k.$fqn$) ||
+          (typeof k.name  === "string" && k.name)  ||
+          String(i / 2);
+        result[keyStr] = transitToPlain(arr[i + 1]);
+      }
+      return result;
+    }
+
+    // Vector: return plain array of converted elements
+    return arr.map(transitToPlain);
+  }
+
+  // Plain JS object — skip $ infrastructure keys, recurse into values.
+  // This path handles our own serialised API-shape (fontFamilies, fontSizes…)
+  // and any other non-transit object Penpot might emit.
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (k.startsWith("$")) continue;
+    result[k] = transitToPlain(v);
+  }
+  return result;
+}
+
+// ── Keys to skip when deep-traversing unknown CLJS Transit objects ─────────
+// These are internal implementation fields that carry numbers or nulls, never
+// user-visible data.  Protocol mask strings (cljs$lang$…) are also skipped.
+const TRAVERSE_SKIP_KEYS = new Set([
+  "$meta$", "$cnt$", "shift", "edit", "__hash__",
+]);
+
+// Low-information strings that appear as property names or internal identifiers
+// inside CLJS trie nodes and must NOT be treated as font-family names.
+const FONT_NAME_STOP_WORDS = new Set([
+  "root", "tail", "shift", "edit", "ns", "fqn", "meta", "cnt",
+]);
+
+// isAlias(s) is defined near the alias-chip section above (uses ALIAS_RE).
+
+/**
+ * True when the string is a plausible font-family name.
+ * Must contain at least one letter, be 2–80 chars, and not be a known
+ * internal CLJS identifier or contain special characters.
+ */
+function isPlausibleFontName(s: string): boolean {
+  if (s.length < 2 || s.length > 80) return false;
+  if (!/[a-zA-Z]/.test(s)) return false;
+  if (FONT_NAME_STOP_WORDS.has(s.toLowerCase())) return false;
+  if (s.includes("$") || s.includes("/")) return false;
+  if (s.includes("(") || s.includes("[") || s.startsWith("{")) return false;
+  return true;
+}
+
+/**
+ * Depth-first string harvester for deeply nested ClojureScript/Transit objects.
+ *
+ * Previous approaches failed because the font-family value is a
+ * PersistentHashSet or PersistentVector whose actual string element lives
+ * inside a HAMT trie — potentially several levels of BitmapIndexedNode or
+ * ArrayNode deep — and the exact field path varies with the hash of the string
+ * and the trie depth.  Probing specific named paths (root, tail, $arr$) was
+ * fragile.
+ *
+ * This function makes no assumptions about structure.  It recurses into every
+ * value that is an object or array, skipping only known-noisy internal keys
+ * (shift, $cnt$, edit, __hash__, cljs$lang$ masks).  Any string it encounters
+ * is tested against two criteria:
+ *   a) alias ref  → starts with "{" and ends with "}"  (preserved verbatim)
+ *   b) font name  → contains a letter, 2-80 chars, no special chars
+ *
+ * Numbers are never collected — they are always trie internals (shift, bitmap,
+ * hash values), never font names.
+ *
+ * @param val      Value to traverse (may be anything).
+ * @param out      Accumulator — candidates are pushed here.
+ * @param depth    Current recursion depth (call with 0).
+ * @param maxDepth Stop recursing below this depth (8 is enough for any HAMT).
+ */
+function collectStringsDeep(
+  val: unknown,
+  out: string[],
+  depth: number,
+  maxDepth: number,
+): void {
+  if (depth > maxDepth || val === null || val === undefined) return;
+
+  if (typeof val === "string") {
+    const s = val.trim();
+    if (s && (isAlias(s) || isPlausibleFontName(s))) out.push(s);
+    return;
+  }
+
+  if (typeof val !== "object") return; // skip numbers, booleans
+
+  if (Array.isArray(val)) {
+    for (const item of val) collectStringsDeep(item, out, depth + 1, maxDepth);
+    return;
+  }
+
+  const obj = val as Record<string, unknown>;
+  for (const [k, v] of Object.entries(obj)) {
+    if (TRAVERSE_SKIP_KEYS.has(k)) continue;
+    if (k.startsWith("cljs$")) continue;
+    collectStringsDeep(v, out, depth + 1, maxDepth);
+  }
+}
+
+/**
+ * Best-effort extraction of a font-family string from any Penpot value shape.
+ *
+ * Uses collectStringsDeep to harvest all candidate strings from the structure
+ * (no assumptions about field names or trie layout), then returns:
+ *   1. The first alias string found ("{font.family.x}"), or
+ *   2. The first plausible font name found ("Inter", "Open Sans", …).
+ *
+ * Returns undefined (not an empty string) when nothing is found, so the caller
+ * can decide whether to show a placeholder.
+ */
+function extractFontFamilyBestEffort(raw: unknown): string | undefined {
+  if (raw === null || raw === undefined) return undefined;
+  if (typeof raw === "string") return raw.trim() || undefined;
+
+  const candidates: string[] = [];
+  collectStringsDeep(raw, candidates, 0, 8);
+
+  if (candidates.length === 0) return undefined;
+  return candidates.find(isAlias) ?? candidates[0];
+}
+
+/**
+ * Extract the first meaningful string from a non-font-family typography
+ * value (font-size, font-weight, line-height, etc.).
+ *
+ * These fields arrive as plain strings or alias strings; they may also be
+ * top-level numbers in some Penpot versions.  They are NEVER deeply nested
+ * transit collections, so we do NOT need the full extractFontFamilies logic.
+ *
+ * Key safety rule: numbers are converted to strings ONLY when they arrive as
+ * top-level primitives (directly from the transit map value slot).  We never
+ * scan Object.values() of unknown objects — that would pick up trie internals
+ * like shift:5, cnt:1, __hash__:0, producing "5", "1", "0" as bogus values.
+ */
+function extractFirstString(val: unknown): string | undefined {
+  if (val === null || val === undefined) return undefined;
+  if (typeof val === "string") return val.trim() || undefined;
+  // Top-level number: legitimate for size/weight/spacing fields.
+  if (typeof val === "number") return String(val);
+
+  // Run transitToPlain once more in case of unconverted remainder.
+  const plain = transitToPlain(val);
+  if (typeof plain === "string") return (plain as string).trim() || undefined;
+  if (typeof plain === "number") return String(plain as number);
+
+  if (Array.isArray(plain)) {
+    for (const item of plain as unknown[]) {
+      const found = extractFirstString(item);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  // For plain objects probe only specific semantic fields.
+  // Do NOT call Object.values() — that path leads to shift:5 → "5".
+  if (typeof plain === "object" && plain !== null) {
+    const obj = plain as Record<string, unknown>;
+    for (const k of ["value", "name"]) {
+      const v = obj[k];
+      if (typeof v === "string" && v.trim()) return v.trim();
+      if (typeof v === "number") return String(v);
+    }
+  }
+
+  return undefined;
+}
+
+/**
  * Normalise a single key from any source format to the canonical
  * TokenTypographyValueString key names used by the Penpot plugin API.
  *
@@ -2685,8 +2914,10 @@ function showNewTokenModal(initialType = "color"): void {
  * font-size (which would naively camelCase to fontFamily / fontSize).
  */
 function normalizeCompositeKey(k: string): string {
-  // 1. Strip Transit "~:" / "~#" prefix
-  const stripped = k.startsWith("~:") || k.startsWith("~#") ? k.slice(2) : k;
+  // 1. Strip Transit "~:" / "~#" OR plain Clojure ":" keyword prefix
+  let stripped = k;
+  if (stripped.startsWith("~:") || stripped.startsWith("~#")) stripped = stripped.slice(2);
+  else if (stripped.startsWith(":")) stripped = stripped.slice(1);
   // 2. kebab-case → camelCase  ("font-family" → "fontFamily")
   const camel = stripped.replace(/-([a-z])/g, (_: string, c: string) => c.toUpperCase());
   // 3. Map the two irregular singular forms to their plural API counterparts
@@ -2705,27 +2936,204 @@ function parseCompositeToken(raw: string): Record<string, string> {
   try {
     const parsed = JSON.parse(s) as unknown;
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
-    obj = parsed as Record<string, unknown>;
+    // Flatten ClojureScript/Transit maps ({ $arr$: [keyObj, val, …] }) into
+    // plain JS objects before we try to read string keys off them.
+    const plain = transitToPlain(parsed);
+    if (typeof plain !== "object" || plain === null || Array.isArray(plain)) return {};
+    obj = plain as Record<string, unknown>;
   } catch {
     return {};
   }
 
   const result: Record<string, string> = {};
   for (const [k, v] of Object.entries(obj)) {
-    // Skip Transit infrastructure keys: $meta$, $cnt$, $arr$, $key$, etc.
+    // Skip any residual Transit infrastructure keys just in case.
     if (k.startsWith("$")) continue;
     const normalKey = normalizeCompositeKey(k);
     if (!normalKey) continue;
-    // Coerce value: arrays → first element; null/undefined → ""
-    if (Array.isArray(v)) {
-      result[normalKey] = v.length > 0 ? String(v[0]) : "";
-    } else if (v !== null && v !== undefined) {
-      result[normalKey] = String(v);
-    } else {
-      result[normalKey] = "";
-    }
+    // Coerce value to string using extractFirstString so that nested Transit
+    // structures (e.g. font-family stored as a Transit vector of Transit maps)
+    // are safely unwrapped instead of producing "[object Object]".
+    // Keys with no extractable string value are omitted — callers treat absent
+    // keys as empty and show placeholder text instead.
+    const str = extractFirstString(v);
+    if (str !== undefined) result[normalKey] = str;
   }
   return result;
+}
+
+/**
+ * Single adapter used by BOTH the table composite preview and the Edit modal.
+ *
+ * Converts any wire-format typography value string
+ *   → stable UI "form" shape:
+ *       { fontFamily, fontSize, fontWeight, lineHeight,
+ *         letterSpacing, textCase, textDecoration }
+ *
+ * Handles all serialisation variants Penpot may produce:
+ *   • Transit map  { $meta$, $cnt$, $arr$: [keyObj,val,…] }  (primary)
+ *   • API JSON     { fontFamilies:"Inter", fontSizes:"16px", … }
+ *   • EDN JSON     { "font-family":["Inter"], "font-size":"16px", … }
+ *   • Empty / alias strings → {}
+ *
+ * Font-family is handled separately via extractFontFamilies because Penpot
+ * stores it as a ClojureScript PersistentHashSet/Vector — a trie structure
+ * whose fields (shift, root, tail) must NOT be treated as the font name.
+ * All other fields arrive as plain strings, alias strings, or numbers.
+ */
+function normalizeTypographyValueToForm(raw: string): Record<string, string> {
+  if (!raw) return {};
+  const s = raw.trim();
+  if (!s.startsWith("{") || !s.endsWith("}")) return {};
+
+  let parsed: unknown;
+  try { parsed = JSON.parse(s); } catch { return {}; }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+
+  // Flatten the outer transit map → plain { "font-family": rawVal, "font-size": "…", … }
+  const plain = transitToPlain(parsed);
+  if (typeof plain !== "object" || plain === null || Array.isArray(plain)) return {};
+  const m = plain as Record<string, unknown>;
+
+  const form: Record<string, string> = {};
+
+  // ── Font family ──────────────────────────────────────────────────────────
+  // font-family is a PersistentHashSet/Vector — a HAMT trie whose actual
+  // string element is deep inside nested nodes.  extractFontFamilyBestEffort
+  // uses collectStringsDeep to traverse the entire structure without assuming
+  // any specific field path.
+  const rawFamily = m["font-family"] ?? m.fontFamilies ?? m.fontFamily;
+  const family = extractFontFamilyBestEffort(rawFamily);
+  if (family) form.fontFamily = family;
+
+  // ── All other typography fields ──────────────────────────────────────────
+  // These are plain strings, alias refs ("{…}"), or numbers.  Try kebab-case
+  // keys first (Penpot internal), then API camelCase / plural variants.
+  const simpleFields: Array<[keys: string[], formKey: string]> = [
+    [["font-size",       "fontSizes",    "fontSize"],    "fontSize"],
+    [["font-weight",     "fontWeight"],                  "fontWeight"],
+    [["line-height",     "lineHeight"],                  "lineHeight"],
+    [["letter-spacing",  "letterSpacing"],               "letterSpacing"],
+    [["text-case",       "textCase"],                    "textCase"],
+    [["text-decoration", "textDecoration"],              "textDecoration"],
+  ];
+
+  for (const [keys, formKey] of simpleFields) {
+    for (const k of keys) {
+      const v = m[k];
+      if (v === undefined || v === null) continue;
+      const str =
+        typeof v === "string" ? v.trim() :
+        typeof v === "number" ? String(v) :
+        undefined;
+      if (str) { form[formKey] = str; break; }
+    }
+  }
+
+  return form;
+}
+
+/**
+ * DEV-only: builds a collapsible <details> panel that shows the raw and
+ * normalised shape of a typography token's value / resolvedValue.
+ * Only called when import.meta.env.DEV is true — safe to include here because
+ * Vite replaces the constant at build time and minifiers prune dead branches.
+ */
+function typographyInspectorHtml(
+  token: SerializedToken,
+  normalized: Record<string, string>,
+): string {
+  /** Parse one wire-format string and return an inspector summary object. */
+  function inspectRaw(raw: string | undefined): {
+    kind: string;
+    rawKeys: string[];
+    transitKeys: string[];
+    familyCandidates: string[];
+    chosenFamily: string | undefined;
+    pretty: string;
+    normStr: string;
+  } {
+    const empty = { kind: "empty", rawKeys: [] as string[], transitKeys: [] as string[],
+                    familyCandidates: [] as string[], chosenFamily: undefined,
+                    pretty: "(empty)", normStr: "{}" };
+    if (raw == null || raw === "") return empty;
+
+    // Step 1: raw JSON parse — shows the wire shape ($meta$, $cnt$, $arr$, …)
+    let parsed: unknown = null;
+    try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
+    const rawKeys =
+      typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        ? Object.keys(parsed as object) : [];
+
+    // Step 2: transit-flatten — shows the semantic keys (font-size, font-family, …)
+    let transitObj: unknown = null;
+    try { transitObj = transitToPlain(parsed); } catch { /* keep null */ }
+    const transitKeys =
+      typeof transitObj === "object" && transitObj !== null && !Array.isArray(transitObj)
+        ? Object.keys(transitObj as object) : [];
+
+    // Step 3: run collectStringsDeep on the raw font-family value and pick best
+    let familyCandidates: string[] = [];
+    let chosenFamily: string | undefined;
+    try {
+      if (typeof transitObj === "object" && transitObj !== null && !Array.isArray(transitObj)) {
+        const m = transitObj as Record<string, unknown>;
+        const rawFam = m["font-family"] ?? m.fontFamilies ?? m.fontFamily;
+        collectStringsDeep(rawFam, familyCandidates, 0, 8);
+        if (familyCandidates.length > 20) familyCandidates = familyCandidates.slice(0, 20);
+        chosenFamily = extractFontFamilyBestEffort(rawFam);
+      }
+    } catch { /* keep defaults */ }
+
+    // Pretty-print raw structure (truncated)
+    let pretty: string;
+    try { pretty = JSON.stringify(parsed, null, 2) ?? raw; } catch { pretty = raw; }
+    if (pretty.length > 800) pretty = pretty.slice(0, 800) + "\n…(truncated)";
+
+    let normStr: string;
+    try { normStr = JSON.stringify(normalizeTypographyValueToForm(raw), null, 2); } catch { normStr = "(error)"; }
+
+    return {
+      kind: typeof parsed === "object" && parsed !== null ? "object" : "string",
+      rawKeys, transitKeys, familyCandidates, chosenFamily, pretty, normStr,
+    };
+  }
+
+  const vi = inspectRaw(token.value);
+  const ri = inspectRaw(token.resolvedValue);
+  // For token.value we already have the normalized result — reuse it.
+  const normForValue = JSON.stringify(normalized, null, 2);
+
+  const row = (k: string, v: string): string =>
+    `<div class="dtm-irow"><span class="dtm-ikey">${esc(k)}</span><code class="dtm-ival">${esc(v)}</code></div>`;
+
+  const section = (
+    title: string,
+    info: ReturnType<typeof inspectRaw>,
+    overrideNorm?: string,
+  ): string => `
+    <div class="dtm-isect">
+      <div class="dtm-isect-title">${esc(title)}</div>
+      ${row("kind", info.kind)}
+      ${row("raw keys", "[" + info.rawKeys.join(", ") + "]")}
+      ${row("transit keys", "[" + info.transitKeys.join(", ") + "]")}
+      ${row("candidates[]", info.familyCandidates.length
+          ? "[" + info.familyCandidates.map(esc).join(", ") + "]"
+          : "(none found)")}
+      ${row("chosen fam.", info.chosenFamily !== undefined ? esc(info.chosenFamily) : "(none)")}
+      <pre class="dtm-ipre">${esc(info.pretty)}</pre>
+      <div class="dtm-isect-title">→ normalizeTypographyValueToForm(…)</div>
+      <pre class="dtm-ipre">${esc(overrideNorm ?? info.normStr)}</pre>
+    </div>`;
+
+  return `
+    <details class="dtm-inspector">
+      <summary class="dtm-inspector-sum">&#128269; Inspect token payload</summary>
+      <div class="dtm-inspector-bd">
+        ${section("token.value", vi, normForValue)}
+        ${section("token.resolvedValue", ri)}
+      </div>
+    </details>`;
 }
 
 function buildEditValueSection(token: SerializedToken): string {
@@ -2734,7 +3142,36 @@ function buildEditValueSection(token: SerializedToken): string {
     return shadowFieldsHtml(v.x, v.y, v.blur, v.spread, v.color, v.type);
   }
   if (token.type === "typography") {
-    return typographyFieldsHtml(parseCompositeToken(token.value));
+    const normalized = normalizeTypographyValueToForm(token.value);
+
+    // ── Debug log B ─────────────────────────────────────────────────────────
+    // import.meta.env.DEV is true in `npm run dev`, false in production build.
+    // We also relay through sendToPlugin so the info appears in the Penpot
+    // DevTools console (same place as log-A) — the plugin iframe's own console
+    // is only visible after switching the DevTools context selector.
+    if (import.meta.env.DEV) {
+      console.debug("[DTM-B] edit modal  name='" + token.name + "'",
+        "\n  raw token.value :", token.value,
+        "\n  normalized form :", normalized);
+
+      // Relay to plugin sandbox console (appears in Penpot's DevTools console)
+      sendToPlugin({
+        type: "dtm-debug",
+        label: "DTM-B  edit modal  name='" + token.name + "'",
+        payload: { rawValue: token.value, normalizedForm: normalized },
+      });
+    }
+
+    // ── In-UI inspector ──────────────────────────────────────────────────────
+    // Shown when localStorage key "dtm-inspector" is not "0".
+    // Defaults to visible so it appears out of the box without any setup.
+    // To hide:  localStorage.setItem("dtm-inspector", "0")  (from the iframe console)
+    // To show:  localStorage.setItem("dtm-inspector", "1")
+    const inspectorEnabled = ((): boolean => {
+      try { return localStorage.getItem("dtm-inspector") !== "0"; } catch { return true; }
+    })();
+    const inspector = inspectorEnabled ? typographyInspectorHtml(token, normalized) : "";
+    return typographyFieldsHtml(normalized) + inspector;
   }
   return simpleValueFieldHtml(token.type, token.value);
 }

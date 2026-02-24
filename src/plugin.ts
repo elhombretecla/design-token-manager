@@ -84,6 +84,67 @@ function valueToString(v: unknown): string {
   return JSON.stringify(v);
 }
 
+// Typography token values are stored in Penpot as ClojureScript maps exposed
+// through a JS Proxy.  JSON.stringify on a Proxy often returns "{}" because the
+// underlying CLJS properties are not JS-enumerable.  We bypass that by
+// explicitly reading each known property name by string key, which forces the
+// Proxy getter and yields the actual stored data.
+//
+// Penpot may expose the same logical field under several different names
+// depending on the version and internal state:
+//   API canonical (TokenTypographyValueString): fontFamilies, fontSizes
+//   singular camelCase:                         fontFamily,  fontSize
+//   CLJS-to-JS kebab:                           font-family, font-size
+//   (and similar for the other five fields)
+//
+// We probe all variants and emit under the API-canonical output key.
+// The first non-null/undefined value found for each output key wins.
+const TYPO_KEY_VARIANTS: ReadonlyArray<readonly [string, string]> = [
+  // [input key to probe on the proxy, canonical output key]
+  ["fontFamilies",   "fontFamilies"],
+  ["fontFamily",     "fontFamilies"],
+  ["font-family",    "fontFamilies"],
+  ["fontSizes",      "fontSizes"],
+  ["fontSize",       "fontSizes"],
+  ["font-size",      "fontSizes"],
+  ["fontWeight",     "fontWeight"],
+  ["font-weight",    "fontWeight"],
+  ["lineHeight",     "lineHeight"],
+  ["line-height",    "lineHeight"],
+  ["letterSpacing",  "letterSpacing"],
+  ["letter-spacing", "letterSpacing"],
+  ["textCase",       "textCase"],
+  ["text-case",      "textCase"],
+  ["textDecoration", "textDecoration"],
+  ["text-decoration","textDecoration"],
+] as const;
+
+function serializeTypographyValue(rawValue: unknown): string {
+  if (rawValue == null)             return "";
+  if (typeof rawValue === "string") return rawValue;
+
+  const obj = rawValue as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+
+  for (const [srcKey, outKey] of TYPO_KEY_VARIANTS) {
+    if (outKey in out) continue; // already captured a value for this output key
+    try {
+      const val = obj[srcKey];
+      if (val !== undefined && val !== null) out[outKey] = val;
+    } catch {
+      // Proxy getter threw; skip
+    }
+  }
+
+  if (Object.keys(out).length > 0) {
+    return JSON.stringify(out);
+  }
+
+  // Last resort: generic stringify.  May still produce "{}" for opaque proxies,
+  // but the explicit-key path above should always win for real Penpot tokens.
+  try { return JSON.stringify(rawValue) ?? ""; } catch { return ""; }
+}
+
 // Composite token types (typography, shadow) must be passed to addToken as
 // plain objects, not JSON strings.  If Penpot receives a string that starts
 // with "{" it treats the whole thing as an alias reference (like
@@ -118,16 +179,43 @@ function serializeToken(token: IToken) {
   let resolvedValue: string | undefined;
   try {
     resolvedValue = token.resolvedValue != null
-      ? valueToString(token.resolvedValue)
+      ? (token.type === "typography"
+          ? serializeTypographyValue(token.resolvedValue)
+          : valueToString(token.resolvedValue))
       : undefined;
   } catch {
     resolvedValue = undefined;
   }
+
+  // Use the proxy-safe serializer for typography so we always emit a real
+  // JSON object instead of "{}" when Penpot's ClojureScript proxy doesn't
+  // expose enumerable properties.
+  const value =
+    token.type === "typography"
+      ? serializeTypographyValue(token.value)
+      : valueToString(token.value);
+
+  // ── Debug log A ─────────────────────────────────────────────────────────
+  // import.meta.env.DEV is replaced at build time by Vite → true in `npm run
+  // dev`, stripped in production.  This avoids the __DTM_DEBUG__ runtime flag
+  // which doesn't work because plugin.ts runs in a separate ClojureScript
+  // sandbox whose globalThis is NOT the browser window.
+  if (import.meta.env.DEV && token.type === "typography") {
+    try {
+      console.debug(
+        "[DTM-A] typography serialised  name='" + token.name + "'"
+          + "  typeof value=" + typeof token.value
+          + "  serialised=" + value,
+        "\n  raw value:", token.value,
+      );
+    } catch { /* never block serialization */ }
+  }
+
   return {
     id: token.id,
     name: token.name ?? "",
     type: token.type ?? "",
-    value: valueToString(token.value),
+    value,
     description: token.description ?? "",
     resolvedValue,
   };
@@ -167,8 +255,34 @@ function broadcastTokens(setId: string): void {
 //  MESSAGE HANDLER  (UI → plugin)
 // ════════════════════════════════════════════════════════════════════════
 
+// ── Defensive message unwrap ──────────────────────────────────────────
+// penpot.ui.onMessage should deliver the payload already unwrapped, but
+// different Penpot host versions have been observed to forward:
+//   • the raw MessageEvent object     → has a `.data` property
+//   • a Figma-compat shim object      → has `.pluginMessage`
+//   • a generic wrapper               → has `.message` or `.payload`
+// We peel off one wrapping layer so the switch always sees {type, ...}.
+function unwrapMessage(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object") return {} as Record<string, unknown>;
+  const r = raw as Record<string, unknown>;
+  if (r.type)                                                    return r;
+  if (r.data        && typeof r.data        === "object") return r.data        as Record<string, unknown>;
+  if (r.pluginMessage && typeof r.pluginMessage === "object") return r.pluginMessage as Record<string, unknown>;
+  if (r.message     && typeof r.message     === "object") return r.message     as Record<string, unknown>;
+  if (r.payload     && typeof r.payload     === "object") return r.payload     as Record<string, unknown>;
+  return r; // return as-is; switch will fall through to default
+}
+
 penpot.ui.onMessage((message: unknown) => {
-  const msg = message as Record<string, unknown>;
+  if (import.meta.env.DEV) {
+    try { console.debug("[DTM] onMessage raw:", message); } catch { /* never throw */ }
+  }
+
+  const msg = unwrapMessage(message);
+
+  if (import.meta.env.DEV) {
+    try { console.debug("[DTM] onMessage unwrapped:", msg); } catch { /* never throw */ }
+  }
 
   try {
     const cat = catalog();
@@ -439,6 +553,18 @@ penpot.ui.onMessage((message: unknown) => {
           type: "fonts-loaded",
           fonts: Array.from(seen).sort(),
         });
+        break;
+      }
+
+      // ── Debug relay from the plugin UI iframe ─────────────────────────────
+      // The plugin UI (main.ts) runs in a separate iframe that shares no
+      // window / globalThis with the Penpot app.  It forwards key debug info
+      // here via postMessage so it surfaces in the same Penpot DevTools console
+      // where log-A above appears.
+      case "dtm-debug": {
+        if (import.meta.env.DEV) {
+          console.debug("[DTM-relay]", msg.label ?? "", msg.payload ?? msg.data);
+        }
         break;
       }
 

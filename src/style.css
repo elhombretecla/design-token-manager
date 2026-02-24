@@ -696,8 +696,8 @@ html.col-resizing * {
 .composite-preview {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 2px 5px;
+  flex-direction: column;
+  gap: 5px;
   min-width: 0;
   overflow: hidden;
 }
@@ -756,6 +756,88 @@ html.col-resizing * {
   font-size: var(--font-size-s);
   color: var(--foreground-secondary);
   font-style: italic;
+}
+
+/* ── Typography token inspector (DEV only) ──────────────────────────────── *
+ * Collapsible <details> panel rendered in the Edit Typography modal.        *
+ * All CSS vars fall back gracefully if the host theme doesn't define them.  */
+
+.dtm-inspector {
+  margin-top: 10px;
+  border: 1px solid var(--border-color, #3a3a4a);
+  border-radius: 4px;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.dtm-inspector-sum {
+  cursor: pointer;
+  padding: 4px 8px;
+  background: var(--background-secondary, #2b2b3a);
+  color: var(--foreground-secondary, #aaa);
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.dtm-inspector-sum::-webkit-details-marker { display: none; }
+.dtm-inspector-sum::marker               { display: none; }
+
+.dtm-inspector-bd {
+  padding: 6px 8px;
+  background: var(--background-primary, #1e1e2a);
+  max-height: 300px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dtm-isect {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dtm-isect-title {
+  color: var(--foreground-secondary, #888);
+  font-weight: 600;
+  margin-top: 4px;
+  margin-bottom: 1px;
+}
+
+.dtm-irow {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.dtm-ikey {
+  color: var(--foreground-secondary, #888);
+  min-width: 36px;
+  flex-shrink: 0;
+}
+
+.dtm-ival {
+  color: var(--foreground-primary, #e0e0e0);
+  font-family: monospace;
+  word-break: break-all;
+}
+
+.dtm-ipre {
+  margin: 2px 0 4px;
+  padding: 4px 6px;
+  background: var(--background-tertiary, #111120);
+  border-radius: 3px;
+  font-size: 10px;
+  font-family: monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 130px;
+  overflow-y: auto;
+  color: var(--foreground-primary, #e0e0e0);
 }
 
 /* ── Mixed-value cell ───────────────────────────────────────────────────── */
@@ -1119,6 +1201,10 @@ html.col-resizing * {
 
 .form-input {
   width: 100%;
+}
+
+.select.form-input {
+  background-size: 14px;
 }
 
 /* Value input with color swatch inline */
