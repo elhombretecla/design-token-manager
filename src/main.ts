@@ -143,6 +143,7 @@ interface ModalAliasPickerState {
   pickerSets: AliasPickerSet[];
   collapsedGroups: Set<string>;
   anchorEl: HTMLElement;
+  targetInputId: string; // which input receives the inserted alias
 }
 
 let modalAliasPicker: ModalAliasPickerState | null = null;
@@ -1055,7 +1056,8 @@ function renderModalAliasPicker(): void {
 }
 
 function insertAliasIntoValueInput(tokenName: string): void {
-  const input = document.getElementById("token-value-input") as HTMLInputElement | null;
+  const targetId = modalAliasPicker?.targetInputId ?? "token-value-input";
+  const input = document.getElementById(targetId) as HTMLInputElement | null;
   if (!input) return;
   const alias = `{${tokenName}}`;
   input.value = alias;
@@ -1067,8 +1069,7 @@ function onModalAliasPickerOutsideClick(e: MouseEvent): void {
   const popover = document.getElementById("modal-alias-picker");
   if (!popover || !modalAliasPicker) return;
   const target = e.target as Node;
-  const triggerBtn = document.getElementById("value-alias-trigger-btn");
-  if (!popover.contains(target) && (!triggerBtn || !triggerBtn.contains(target))) {
+  if (!popover.contains(target) && !modalAliasPicker.anchorEl.contains(target)) {
     closeModalAliasPicker();
   }
 }
@@ -1080,11 +1081,12 @@ function closeModalAliasPicker(): void {
   document.removeEventListener("mousedown", onModalAliasPickerOutsideClick, true);
 }
 
-function openModalAliasPicker(tokenType: string, anchorEl: HTMLElement): void {
-  // Toggle: close if already open
-  if (modalAliasPicker) { closeModalAliasPicker(); return; }
+function openModalAliasPicker(tokenType: string, anchorEl: HTMLElement, targetInputId = "token-value-input"): void {
+  // Toggle: close if already open for the same trigger
+  if (modalAliasPicker && modalAliasPicker.anchorEl === anchorEl) { closeModalAliasPicker(); return; }
+  if (modalAliasPicker) closeModalAliasPicker();
 
-  modalAliasPicker = { tokenType, searchValue: "", pickerSets: [], collapsedGroups: new Set(), anchorEl };
+  modalAliasPicker = { tokenType, searchValue: "", pickerSets: [], collapsedGroups: new Set(), anchorEl, targetInputId };
 
   const popover = getOrCreateModalAliasPicker();
   popover.classList.remove("modal-alias-picker--hidden");
@@ -1249,6 +1251,19 @@ function bindValueAliasTrigger(): void {
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
     openModalAliasPicker(btn.dataset.tokenType ?? "color", btn);
+  });
+}
+
+function bindCompositePropAliasTriggers(): void {
+  document.querySelectorAll<HTMLButtonElement>(".composite-alias-trigger").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openModalAliasPicker(
+        btn.dataset.tokenType ?? "dimension",
+        btn,
+        btn.dataset.targetInput ?? ""
+      );
+    });
   });
 }
 
@@ -1991,19 +2006,39 @@ function shadowFieldsHtml(x = "0", y = "4", blur = "8", spread = "0", color = "r
     <div class="shadow-grid">
       <div class="form-field">
         <label class="form-label" for="shadow-x">X</label>
-        <input type="number" class="input form-input" id="shadow-x" value="${esc(x)}" />
+        <div class="value-input-wrapper">
+          <input type="text" class="input form-input" id="shadow-x" value="${esc(x)}" />
+          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
+                  title="Insert alias reference"
+                  data-token-type="dimension" data-target-input="shadow-x">${VALUE_ALIAS_INSERT_ICON}</button>
+        </div>
       </div>
       <div class="form-field">
         <label class="form-label" for="shadow-y">Y</label>
-        <input type="number" class="input form-input" id="shadow-y" value="${esc(y)}" />
+        <div class="value-input-wrapper">
+          <input type="text" class="input form-input" id="shadow-y" value="${esc(y)}" />
+          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
+                  title="Insert alias reference"
+                  data-token-type="dimension" data-target-input="shadow-y">${VALUE_ALIAS_INSERT_ICON}</button>
+        </div>
       </div>
       <div class="form-field">
         <label class="form-label" for="shadow-blur">Blur</label>
-        <input type="number" class="input form-input" id="shadow-blur" value="${esc(blur)}" min="0" />
+        <div class="value-input-wrapper">
+          <input type="text" class="input form-input" id="shadow-blur" value="${esc(blur)}" />
+          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
+                  title="Insert alias reference"
+                  data-token-type="dimension" data-target-input="shadow-blur">${VALUE_ALIAS_INSERT_ICON}</button>
+        </div>
       </div>
       <div class="form-field">
         <label class="form-label" for="shadow-spread">Spread</label>
-        <input type="number" class="input form-input" id="shadow-spread" value="${esc(spread)}" />
+        <div class="value-input-wrapper">
+          <input type="text" class="input form-input" id="shadow-spread" value="${esc(spread)}" />
+          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
+                  title="Insert alias reference"
+                  data-token-type="dimension" data-target-input="shadow-spread">${VALUE_ALIAS_INSERT_ICON}</button>
+        </div>
       </div>
     </div>
     <div class="form-field">
@@ -2013,6 +2048,9 @@ function shadowFieldsHtml(x = "0", y = "4", blur = "8", spread = "0", color = "r
               style="background:${esc(color || "rgba(0,0,0,0.25)")}"></span>
         <input type="text" class="input form-input has-swatch" id="shadow-color"
                value="${esc(color)}" placeholder="rgba(0,0,0,0.25)" />
+        <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
+                title="Insert alias reference"
+                data-token-type="color" data-target-input="shadow-color">${VALUE_ALIAS_INSERT_ICON}</button>
       </div>
     </div>`;
 }
@@ -2038,43 +2076,81 @@ function typographyFieldsHtml(vals: Record<string, string> = {}): string {
           <button type="button" class="icon-btn fp-chevron-btn"
                   data-font-picker-trigger="typo-family"
                   title="Browse fonts">${CHEV_DOWN}</button>
+          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
+                  title="Insert alias reference"
+                  data-token-type="fontFamilies" data-target-input="typo-family">${VALUE_ALIAS_INSERT_ICON}</button>
         </div>
       </div>
       <div class="form-field">
         <label class="form-label" for="typo-size">Font Size</label>
-        <input type="text" class="input form-input" id="typo-size"
-               value="${v("fontSize")}" placeholder="16px" />
+        <div class="value-input-wrapper">
+          <input type="text" class="input form-input" id="typo-size"
+                 value="${v("fontSize")}" placeholder="16px" />
+          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
+                  title="Insert alias reference"
+                  data-token-type="fontSizes" data-target-input="typo-size">${VALUE_ALIAS_INSERT_ICON}</button>
+        </div>
       </div>
       <div class="form-field">
         <label class="form-label" for="typo-weight">Font Weight</label>
-        <input type="text" class="input form-input" id="typo-weight"
-               value="${v("fontWeight")}" placeholder="400" />
+        <div class="value-input-wrapper">
+          <input type="text" class="input form-input" id="typo-weight"
+                 value="${v("fontWeight")}" placeholder="400" />
+          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
+                  title="Insert alias reference"
+                  data-token-type="fontWeights" data-target-input="typo-weight">${VALUE_ALIAS_INSERT_ICON}</button>
+        </div>
       </div>
       <div class="form-field">
         <label class="form-label" for="typo-line-height">Line Height</label>
-        <input type="text" class="input form-input" id="typo-line-height"
-               value="${v("lineHeight")}" placeholder="1.5" />
+        <div class="value-input-wrapper">
+          <input type="text" class="input form-input" id="typo-line-height"
+                 value="${v("lineHeight")}" placeholder="1.5" />
+          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
+                  title="Insert alias reference"
+                  data-token-type="dimension" data-target-input="typo-line-height">${VALUE_ALIAS_INSERT_ICON}</button>
+        </div>
       </div>
       <div class="form-field">
         <label class="form-label" for="typo-letter-spacing">Letter Spacing</label>
-        <input type="text" class="input form-input" id="typo-letter-spacing"
-               value="${v("letterSpacing")}" placeholder="0" />
+        <div class="value-input-wrapper">
+          <input type="text" class="input form-input" id="typo-letter-spacing"
+                 value="${v("letterSpacing")}" placeholder="0" />
+          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
+                  title="Insert alias reference"
+                  data-token-type="letterSpacing" data-target-input="typo-letter-spacing">${VALUE_ALIAS_INSERT_ICON}</button>
+        </div>
       </div>
       <div class="form-field">
         <label class="form-label" for="typo-text-case">Text Case</label>
-        <select class="select form-input" id="typo-text-case">
-          ${["none", "uppercase", "lowercase", "capitalize"]
-            .map((o) => `<option value="${o}"${vals.textCase === o ? " selected" : ""}>${o}</option>`)
-            .join("")}
-        </select>
+        <div class="value-input-wrapper">
+          <input type="text" class="input form-input" id="typo-text-case" list="typo-text-case-list"
+                 value="${v("textCase")}" placeholder="none" autocomplete="off" />
+          <datalist id="typo-text-case-list">
+            <option value="none"></option>
+            <option value="uppercase"></option>
+            <option value="lowercase"></option>
+            <option value="capitalize"></option>
+          </datalist>
+          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
+                  title="Insert alias reference"
+                  data-token-type="textCase" data-target-input="typo-text-case">${VALUE_ALIAS_INSERT_ICON}</button>
+        </div>
       </div>
       <div class="form-field" style="grid-column: 1/-1">
         <label class="form-label" for="typo-text-decoration">Text Decoration</label>
-        <select class="select form-input" id="typo-text-decoration">
-          ${["none", "underline", "line-through"]
-            .map((o) => `<option value="${o}"${vals.textDecoration === o ? " selected" : ""}>${o}</option>`)
-            .join("")}
-        </select>
+        <div class="value-input-wrapper">
+          <input type="text" class="input form-input" id="typo-text-decoration" list="typo-text-decoration-list"
+                 value="${v("textDecoration")}" placeholder="none" autocomplete="off" />
+          <datalist id="typo-text-decoration-list">
+            <option value="none"></option>
+            <option value="underline"></option>
+            <option value="line-through"></option>
+          </datalist>
+          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
+                  title="Insert alias reference"
+                  data-token-type="textDecoration" data-target-input="typo-text-decoration">${VALUE_ALIAS_INSERT_ICON}</button>
+        </div>
       </div>
     </div>`;
 }
@@ -2129,8 +2205,8 @@ function readTypographyValue(): string {
     fontWeight:     el<HTMLInputElement>("typo-weight")?.value       ?? "",
     lineHeight:     el<HTMLInputElement>("typo-line-height")?.value  ?? "",
     letterSpacing:  el<HTMLInputElement>("typo-letter-spacing")?.value ?? "",
-    textCase:       el<HTMLSelectElement>("typo-text-case")?.value   ?? "",
-    textDecoration: el<HTMLSelectElement>("typo-text-decoration")?.value ?? "",
+    textCase:       el<HTMLInputElement>("typo-text-case")?.value   ?? "",
+    textDecoration: el<HTMLInputElement>("typo-text-decoration")?.value ?? "",
   };
   return JSON.stringify(sanitizeTypographyValueForApi(raw));
 }
@@ -2522,6 +2598,7 @@ function showNewTokenModal(initialType = "color"): void {
   if (initialType === "color") bindColorSwatchPreview();
   if (initialType === "shadow") bindShadowColorPicker();
   bindValueAliasTrigger();
+  bindCompositePropAliasTriggers();
   bindFontPicker();
 
   // Update fields when type changes
@@ -2538,6 +2615,7 @@ function showNewTokenModal(initialType = "color"): void {
     if (newType === "color") bindColorSwatchPreview();
     if (newType === "shadow") bindShadowColorPicker();
     bindValueAliasTrigger();
+    bindCompositePropAliasTriggers();
     bindFontPicker();
   });
 
@@ -2842,6 +2920,7 @@ function showEditTokenModal(token: SerializedToken): void {
   if (token.type === "color") bindColorSwatchPreview();
   if (token.type === "shadow") bindShadowColorPicker();
   bindValueAliasTrigger();
+  bindCompositePropAliasTriggers();
   bindFontPicker();
 
   el("confirm-edit-token-btn").addEventListener("click", () => {

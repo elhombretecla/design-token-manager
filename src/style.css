@@ -757,6 +757,7 @@ html.col-resizing * {
   gap: 5px;
   min-width: 0;
   overflow: hidden;
+  width: 100%;
 }
 
 /* One sub-property pill: icon + value */
@@ -1636,7 +1637,7 @@ html.col-resizing * {
 
 .fp-chevron-btn {
   position: absolute;
-  right: 8px;
+  right: 34px;
   top: 50%;
   transform: translateY(-50%);
   color: var(--foreground-secondary);
