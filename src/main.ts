@@ -2008,8 +2008,12 @@ function shadowFieldsHtml(x = "0", y = "4", blur = "8", spread = "0", color = "r
     </div>
     <div class="form-field">
       <label class="form-label" for="shadow-color">Color</label>
-      <input type="text" class="input form-input" id="shadow-color" value="${esc(color)}"
-             placeholder="rgba(0,0,0,0.25)" />
+      <div class="value-input-wrapper">
+        <span class="color-swatch-small" id="shadow-color-swatch"
+              style="background:${esc(color || "rgba(0,0,0,0.25)")}"></span>
+        <input type="text" class="input form-input has-swatch" id="shadow-color"
+               value="${esc(color)}" placeholder="rgba(0,0,0,0.25)" />
+      </div>
     </div>`;
 }
 
@@ -2449,6 +2453,25 @@ function bindColorSwatchPreview(): void {
   });
 }
 
+function bindShadowColorPicker(): void {
+  const input = el<HTMLInputElement>("shadow-color");
+  const swatch = el("shadow-color-swatch");
+  if (!input || !swatch) return;
+
+  // Live text-typed preview
+  input.addEventListener("input", () => {
+    swatch.style.background = input.value || "rgba(0,0,0,0.25)";
+  });
+
+  // Swatch click → open picker
+  swatch.style.pointerEvents = "auto";
+  swatch.style.cursor = "pointer";
+  swatch.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openColorPicker("shadow-color", "shadow-color-swatch");
+  });
+}
+
 // ════════════════════════════════════════════════════════════════════════
 //  MODAL: CREATE NEW TOKEN
 // ════════════════════════════════════════════════════════════════════════
@@ -2497,6 +2520,7 @@ function showNewTokenModal(initialType = "color"): void {
     </div>`);
 
   if (initialType === "color") bindColorSwatchPreview();
+  if (initialType === "shadow") bindShadowColorPicker();
   bindValueAliasTrigger();
   bindFontPicker();
 
@@ -2512,6 +2536,7 @@ function showNewTokenModal(initialType = "color"): void {
     if (nameInput) nameInput.placeholder = `Enter ${getTypeDef(newType).label.toLowerCase()} token name`;
     el("token-value-section").innerHTML = buildValueSection(newType);
     if (newType === "color") bindColorSwatchPreview();
+    if (newType === "shadow") bindShadowColorPicker();
     bindValueAliasTrigger();
     bindFontPicker();
   });
@@ -2815,6 +2840,7 @@ function showEditTokenModal(token: SerializedToken): void {
     </div>`);
 
   if (token.type === "color") bindColorSwatchPreview();
+  if (token.type === "shadow") bindShadowColorPicker();
   bindValueAliasTrigger();
   bindFontPicker();
 
