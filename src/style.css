@@ -1353,6 +1353,161 @@ html.col-resizing * {
   flex: 1;
 }
 
+/* ── Sidebar footer (Math info link) ────────────────────────────────────── */
+.sidebar-footer {
+  border-top: 1px solid var(--background-quaternary);
+  padding: 6px 8px;
+  flex-shrink: 0;
+}
+
+.sidebar-math-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 4px;
+  border: none;
+  background: none;
+  border-radius: 6px;
+  color: var(--foreground-secondary);
+  font-size: var(--font-size-xs);
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: background-color 0.12s, color 0.12s;
+}
+
+.sidebar-math-btn:hover {
+  background-color: var(--background-tertiary);
+  color: var(--foreground-primary);
+}
+
+/* ── Wide modal variant ─────────────────────────────────────────────────── */
+.modal--wide {
+  width: min(680px, 96vw);
+  max-height: 92vh;
+}
+
+/* ── Math info modal ────────────────────────────────────────────────────── */
+.math-modal-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 28px;
+}
+
+@media (max-width: 360px) {
+  .math-modal-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.math-section-heading {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  color: var(--foreground-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0 0 10px;
+}
+
+.math-section-heading + .math-section-heading,
+.math-divider + .math-section-heading {
+  margin-top: 0;
+}
+
+.math-op-block {
+  margin-bottom: 12px;
+}
+
+.math-op-name {
+  font-size: var(--font-size-s);
+  font-weight: var(--font-weight-bold);
+  color: var(--foreground-primary);
+  margin: 0 0 2px;
+}
+
+.math-op-desc {
+  font-size: var(--font-size-xs);
+  color: var(--foreground-secondary);
+  margin: 0 0 4px;
+  line-height: 1.5;
+}
+
+.math-example {
+  display: inline-flex;
+  font-family: monospace;
+  font-size: var(--font-size-xs);
+  background-color: var(--background-secondary);
+  border: 1px solid var(--background-quaternary);
+  border-radius: 4px;
+  padding: 2px 7px;
+  color: var(--foreground-primary);
+  margin: 2px 0;
+}
+
+.math-example--inline {
+  display: inline;
+  padding: 1px 5px;
+}
+
+.math-example-note {
+  font-size: var(--font-size-xs);
+  color: var(--foreground-secondary);
+  margin: 3px 0 0;
+  line-height: 1.4;
+}
+
+.math-divider {
+  border: none;
+  border-top: 1px solid var(--background-quaternary);
+  margin: 14px 0;
+}
+
+.math-body-text {
+  font-size: var(--font-size-xs);
+  color: var(--foreground-secondary);
+  line-height: 1.5;
+  margin: 0 0 8px;
+}
+
+.math-note-block {
+  margin-bottom: 10px;
+}
+
+.math-note-title {
+  font-size: var(--font-size-s);
+  font-weight: var(--font-weight-bold);
+  color: var(--foreground-primary);
+  margin: 0 0 3px;
+}
+
+.math-note-text {
+  font-size: var(--font-size-xs);
+  color: var(--foreground-secondary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.math-use-case-block {
+  margin-bottom: 10px;
+}
+
+.math-use-case-label {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  color: var(--foreground-primary);
+  margin: 0 0 3px;
+}
+
+.math-use-case-note {
+  font-size: var(--font-size-xs);
+  color: var(--foreground-secondary);
+  line-height: 1.4;
+  margin: 0;
+}
+
 /* ── Utility ─────────────────────────────────────────────────────────── */
 .hidden {
   display: none !important;
