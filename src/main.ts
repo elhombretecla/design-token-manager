@@ -131,6 +131,8 @@ interface AliasEditorState {
   pickerSets: AliasPickerSet[];
   chipEl: HTMLElement;
   collapsedGroups: Set<string>; // setIds currently collapsed
+  // When set, the editor is targeting a sub-property of a composite token.
+  compositeCtx?: { propKey: string; propType: string };
 }
 
 let aliasEditor: AliasEditorState | null = null;
@@ -311,8 +313,9 @@ window.addEventListener("message", (event: MessageEvent) => {
       }
       break;
 
-    case "all-tokens-by-type-loaded":
-      if (aliasEditor && msg.tokenType === aliasEditor.token.type) {
+    case "all-tokens-by-type-loaded": {
+      const expectedType = aliasEditor?.compositeCtx?.propType ?? aliasEditor?.token.type;
+      if (aliasEditor && msg.tokenType === expectedType) {
         aliasEditor.pickerSets = msg.sets;
         renderAliasEditor();
       }
@@ -321,6 +324,7 @@ window.addEventListener("message", (event: MessageEvent) => {
         renderModalAliasPicker();
       }
       break;
+    }
 
     case "fonts-loaded":
       state.documentFonts = msg.fonts;
@@ -700,17 +704,96 @@ const TYPOGRAPHY_PROP_ORDER: CompositePropDef[] = [
   { key: "textDecoration", label: "Decoration",  iconKey: "textDecoration" },
 ];
 
-/** Render one sub-property value: alias chip (mini), mixed, or plain text. */
-function compositeSubValueHtml(value: string): string {
+// Maps each composite sub-property key to the token type used when fetching
+// candidates for the alias picker.
+const COMPOSITE_PROP_TYPE: Record<string, string> = {
+  // Shadow sub-props
+  color:  "color",
+  x:      "dimension",
+  y:      "dimension",
+  blur:   "dimension",
+  spread: "dimension",
+  // Typography sub-props (UI keys from normalizeTypographyValueToForm)
+  fontFamily:     "fontFamilies",
+  fontSize:       "fontSizes",
+  fontWeight:     "fontWeights",
+  lineHeight:     "dimension",
+  letterSpacing:  "letterSpacing",
+  textCase:       "textCase",
+  textDecoration: "textDecoration",
+};
+
+/** Extract the current value of one sub-property from a composite token. */
+function getCompositeSubValue(token: SerializedToken, propKey: string): string {
+  if (token.type === "shadow") {
+    const vals = normalizeShadowValueToPreview(token.value);
+    return (vals as Record<string, string>)[propKey] ?? "";
+  }
+  if (token.type === "typography") {
+    const vals = normalizeTypographyValueToForm(token.value);
+    return (vals as Record<string, string>)[propKey] ?? "";
+  }
+  return "";
+}
+
+/** Rebuild the full composite value after changing one sub-property. */
+function buildCompositeValueWithProp(
+  token: SerializedToken,
+  propKey: string,
+  newSubValue: string
+): string {
+  if (token.type === "shadow") {
+    const v = normalizeShadowValueToPreview(token.value) as Record<string, string>;
+    const u = { ...v, [propKey]: newSubValue };
+    return JSON.stringify({
+      type:   u.type   ?? "drop-shadow",
+      x:      u.x      ?? "0",
+      y:      u.y      ?? "0",
+      blur:   u.blur   ?? "0",
+      spread: u.spread ?? "0",
+      color:  u.color  ?? "rgba(0,0,0,0.25)",
+    });
+  }
+  if (token.type === "typography") {
+    const v = normalizeTypographyValueToForm(token.value) as Record<string, string>;
+    const u = { ...v, [propKey]: newSubValue };
+    const apiForm: Record<string, string> = {
+      fontFamilies:   u.fontFamily     ?? "",
+      fontSizes:      u.fontSize       ?? "",
+      fontWeight:     u.fontWeight     ?? "",
+      lineHeight:     u.lineHeight     ?? "",
+      letterSpacing:  u.letterSpacing  ?? "",
+      textCase:       u.textCase       ?? "",
+      textDecoration: u.textDecoration ?? "",
+    };
+    return JSON.stringify(sanitizeTypographyValueForApi(apiForm));
+  }
+  return token.value;
+}
+
+/** Render one sub-property value: alias chip (interactive or read-only), mixed, or plain text.
+ *  Pass tokenId + propKey to make alias chips interactive (clickable to change the alias). */
+function compositeSubValueHtml(
+  value: string,
+  tokenId?: string,
+  propKey?: string
+): string {
   if (!value) return `<span class="cprop-val cprop-val--muted">—</span>`;
+
+  const propType = propKey ? (COMPOSITE_PROP_TYPE[propKey] ?? "") : "";
+  const interactive = !!(tokenId && propKey && propType);
 
   if (isAlias(value)) {
     const name = value.trim().slice(1, -1);
+    if (interactive) {
+      return `<div class="alias-chip" data-token-id="${esc(tokenId!)}" data-prop-key="${esc(propKey!)}" data-prop-type="${esc(propType)}" role="button" tabindex="0" title="${esc(value)}"><span class="alias-chip-name">${esc(name)}</span>${ALIAS_GEAR_ICON}</div>`;
+    }
     return `<span class="alias-chip" title="${esc(value)}"><span class="alias-chip-name">${esc(name)}</span></span>`;
   }
 
   if (/\{[^{}]+\}/.test(value)) {
-    // Mixed value: plain text interleaved with {alias} references
+    // Mixed value: plain text interleaved with {alias} references.
+    // Mixed composite sub-values are rendered read-only (no interactive chip).
     const parts = parseMixedValue(value).map((seg) => {
       if (seg.kind === "alias") {
         return `<span class="alias-chip" title="{${esc(seg.name)}}"><span class="alias-chip-name">${esc(seg.name)}</span></span>`;
@@ -725,9 +808,10 @@ function compositeSubValueHtml(value: string): string {
 
 const COMPOSITE_MAX_VISIBLE = 4;
 
-function compositeTypographyPreviewHtml(vals: Record<string, string>): string {
+function compositeTypographyPreviewHtml(vals: Record<string, string>, tokenId?: string): string {
   const entries = TYPOGRAPHY_PROP_ORDER
     .map(({ key, label, iconKey }) => ({
+      key,
       label,
       icon: TOKEN_TYPE_ICONS[iconKey] ?? "",
       value: vals[key] ?? "",
@@ -743,8 +827,8 @@ function compositeTypographyPreviewHtml(vals: Record<string, string>): string {
   const hidden  = entries.slice(COMPOSITE_MAX_VISIBLE);
 
   const items = visible
-    .map(({ label, icon, value }) =>
-      `<span class="cprop" title="${esc(label)}: ${esc(value)}">${icon}${compositeSubValueHtml(value)}</span>`
+    .map(({ key, label, icon, value }) =>
+      `<span class="cprop" title="${esc(label)}: ${esc(value)}">${icon}${compositeSubValueHtml(value, tokenId, key)}</span>`
     )
     .join("");
 
@@ -756,7 +840,7 @@ function compositeTypographyPreviewHtml(vals: Record<string, string>): string {
   return `<div class="composite-preview">${items}${moreHint}</div>`;
 }
 
-function compositeShadowPreviewHtml(vals: Record<string, string>): string {
+function compositeShadowPreviewHtml(vals: Record<string, string>, tokenId?: string): string {
   if (!vals || Object.keys(vals).length === 0) {
     return `<span class="composite-empty">—</span>`;
   }
@@ -772,7 +856,7 @@ function compositeShadowPreviewHtml(vals: Record<string, string>): string {
   if (vals.color) {
     if (isAlias(vals.color) || /\{[^{}]+\}/.test(vals.color)) {
       parts.push(
-        `<span class="cprop" title="Color: ${esc(vals.color)}">${TOKEN_TYPE_ICONS.color}${compositeSubValueHtml(vals.color)}</span>`
+        `<span class="cprop" title="Color: ${esc(vals.color)}">${TOKEN_TYPE_ICONS.color}${compositeSubValueHtml(vals.color, tokenId, "color")}</span>`
       );
     } else {
       parts.push(
@@ -788,9 +872,9 @@ function compositeShadowPreviewHtml(vals: Record<string, string>): string {
     parts.push(
       `<span class="cprop" title="${esc(titleParts.join(", "))}">` +
       TOKEN_TYPE_ICONS.dimension +
-      (vals.x ? compositeSubValueHtml(vals.x) : "") +
+      (vals.x ? compositeSubValueHtml(vals.x, tokenId, "x") : "") +
       (vals.x && vals.y ? `<span class="cprop-sep">,</span>` : "") +
-      (vals.y ? compositeSubValueHtml(vals.y) : "") +
+      (vals.y ? compositeSubValueHtml(vals.y, tokenId, "y") : "") +
       `</span>`
     );
   }
@@ -798,14 +882,14 @@ function compositeShadowPreviewHtml(vals: Record<string, string>): string {
   // Blur
   if (vals.blur) {
     parts.push(
-      `<span class="cprop" title="Blur: ${esc(vals.blur)}">${TOKEN_TYPE_ICONS.opacity}${compositeSubValueHtml(vals.blur)}</span>`
+      `<span class="cprop" title="Blur: ${esc(vals.blur)}">${TOKEN_TYPE_ICONS.opacity}${compositeSubValueHtml(vals.blur, tokenId, "blur")}</span>`
     );
   }
 
   // Spread (omit when zero / empty to keep the preview compact)
   if (vals.spread && vals.spread !== "0") {
     parts.push(
-      `<span class="cprop" title="Spread: ${esc(vals.spread)}">${TOKEN_TYPE_ICONS.dimension}${compositeSubValueHtml(vals.spread)}</span>`
+      `<span class="cprop" title="Spread: ${esc(vals.spread)}">${TOKEN_TYPE_ICONS.dimension}${compositeSubValueHtml(vals.spread, tokenId, "spread")}</span>`
     );
   }
 
@@ -830,10 +914,10 @@ function valueCellHtml(token: SerializedToken): string {
   // Both table and modal go through the same normalizer adapter so key
   // names are always consistent between the preview and the edit form.
   if (token.type === "typography") {
-    return compositeTypographyPreviewHtml(normalizeTypographyValueToForm(token.value));
+    return compositeTypographyPreviewHtml(normalizeTypographyValueToForm(token.value), token.id);
   }
   if (token.type === "shadow") {
-    return compositeShadowPreviewHtml(normalizeShadowValueToPreview(token.value));
+    return compositeShadowPreviewHtml(normalizeShadowValueToPreview(token.value), token.id);
   }
 
   // Pure alias: entire value is a single {reference}
@@ -1170,13 +1254,16 @@ function bindValueAliasTrigger(): void {
 
 function saveAlias(): void {
   if (!aliasEditor) return;
-  const { token, inputValue } = aliasEditor;
+  const { token, inputValue, compositeCtx } = aliasEditor;
+  const value = compositeCtx
+    ? buildCompositeValueWithProp(token, compositeCtx.propKey, inputValue.trim())
+    : inputValue;
   sendToPlugin({
     type: "update-token",
     setId: state.selectedSetId,
     tokenId: token.id,
     name: token.name,
-    value: inputValue,
+    value,
     description: token.description,
   });
   closeAliasEditor();
@@ -1268,7 +1355,8 @@ function renderAliasEditor(): void {
       if (!aliasEditor) return;
       aliasEditor.mode = "list";
       if (aliasEditor.pickerSets.length === 0) {
-        sendToPlugin({ type: "get-all-tokens-by-type", tokenType: aliasEditor.token.type });
+        const tokenType = aliasEditor.compositeCtx?.propType ?? aliasEditor.token.type;
+        sendToPlugin({ type: "get-all-tokens-by-type", tokenType });
       }
       renderAliasEditor();
     });
@@ -1330,22 +1418,35 @@ function onAliasChipClick(tokenId: string, chipEl: HTMLElement): void {
   const token = state.tokens.find((t) => t.id === tokenId);
   if (!token) return;
 
-  // If clicking the already-open chip, just close
-  if (aliasEditor && aliasEditor.token.id === tokenId) {
+  const propKey  = chipEl.dataset.propKey;
+  const propType = chipEl.dataset.propType;
+  const compositeCtx = propKey && propType ? { propKey, propType } : undefined;
+
+  // If clicking the already-open chip for the same prop, just close
+  if (
+    aliasEditor &&
+    aliasEditor.token.id === tokenId &&
+    aliasEditor.compositeCtx?.propKey === propKey
+  ) {
     closeAliasEditor();
     return;
   }
 
   closeAliasEditor();
 
+  const inputValue = compositeCtx
+    ? getCompositeSubValue(token, compositeCtx.propKey)
+    : token.value;
+
   aliasEditor = {
     token,
-    inputValue: token.value,
+    inputValue,
     searchValue: "",
     mode: "edit",
     pickerSets: [],
     chipEl,
     collapsedGroups: new Set(),
+    compositeCtx,
   };
 
   const popover = getOrCreateEditorPopover();
