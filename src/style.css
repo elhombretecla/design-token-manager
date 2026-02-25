@@ -143,6 +143,62 @@ html, body {
   text-align: center;
 }
 
+/* ── Set tree (collapsible hierarchy) ───────────────────────────────────── */
+.set-tree-group {
+  list-style: none;
+  font-size: var(--font-size-s);
+}
+
+.set-tree-group-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  padding-right: 10px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  transition: background-color 0.12s;
+  user-select: none;
+}
+
+.set-tree-group-row:hover {
+  background-color: var(--background-tertiary);
+}
+
+.set-tree-group.active > .set-tree-group-row {
+  border-left-color: var(--accent-primary);
+  background-color: var(--background-tertiary);
+}
+
+.set-tree-group.active > .set-tree-group-row .set-name {
+  color: var(--foreground-primary);
+}
+
+.set-tree-chevron {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--foreground-secondary);
+}
+
+.set-tree-chevron:hover {
+  color: var(--foreground-primary);
+}
+
+.set-tree-children {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
 /* Themes section */
 .themes-section {
   border-top: 1px solid var(--background-quaternary);
@@ -548,6 +604,7 @@ html.col-resizing * {
   min-height: 34px;
   border-bottom: 1px solid var(--background-tertiary);
   transition: background-color 0.1s;
+  padding: 4px 0;
 }
 
 .token-row:hover {

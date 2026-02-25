@@ -35,6 +35,92 @@ const state = {
 // ── Bulk-selection state ──────────────────────────────────────────────────
 const selectedTokenIds = new Set<string>();
 
+// ── Set tree expansion state ──────────────────────────────────────────────
+// Stores group.path values for groups that are manually collapsed.
+// Groups are expanded by default; only those explicitly closed are tracked here.
+const collapsedGroups = new Set<string>();
+
+type TreeNode =
+  | { kind: "group"; path: string; label: string; children: TreeNode[]; hasSet: boolean; setId?: string }
+  | { kind: "set"; fullName: string; label: string; setId: string };
+
+function buildSetTree(sets: SerializedSet[]): TreeNode[] {
+  type GroupNode = Extract<TreeNode, { kind: "group" }>;
+
+  // Identify which slash-separated prefixes serve as group containers.
+  const groupPaths = new Set<string>();
+  const setsByName = new Map<string, SerializedSet>();
+  for (const set of sets) {
+    setsByName.set(set.name, set);
+    const parts = set.name.split("/");
+    for (let i = 1; i < parts.length; i++) {
+      groupPaths.add(parts.slice(0, i).join("/"));
+    }
+  }
+
+  const groupMap = new Map<string, GroupNode>();
+  const roots: TreeNode[] = [];
+
+  function getOrCreateGroup(path: string): GroupNode {
+    if (groupMap.has(path)) return groupMap.get(path)!;
+    const parts = path.split("/");
+    const label = parts[parts.length - 1];
+    const existingSet = setsByName.get(path);
+    const node: GroupNode = {
+      kind: "group",
+      path,
+      label,
+      children: [],
+      hasSet: !!existingSet,
+      setId: existingSet?.id,
+    };
+    groupMap.set(path, node);
+    if (parts.length === 1) {
+      roots.push(node);
+    } else {
+      const parent = getOrCreateGroup(parts.slice(0, -1).join("/"));
+      parent.children.push(node);
+    }
+    return node;
+  }
+
+  // Process sets in creation order. Groups are created lazily the first time a
+  // child set is encountered, so their position in roots/children reflects when
+  // they first appear — preserving the original creation order throughout.
+  for (const set of sets) {
+    const parts = set.name.split("/");
+    if (groupPaths.has(set.name)) {
+      // This set name is also a group prefix: ensure the group node exists so
+      // that hasSet / setId are registered, but don't add it to roots here —
+      // getOrCreateGroup handles insertion on first call.
+      getOrCreateGroup(set.name);
+    } else {
+      const leaf: Extract<TreeNode, { kind: "set" }> = {
+        kind: "set",
+        fullName: set.name,
+        label: parts[parts.length - 1],
+        setId: set.id,
+      };
+      if (parts.length === 1) {
+        roots.push(leaf);
+      } else {
+        const parent = getOrCreateGroup(parts.slice(0, -1).join("/"));
+        parent.children.push(leaf);
+      }
+    }
+  }
+
+  return roots;
+}
+
+/** Ensure all ancestor group paths for a given set name are not collapsed. */
+function expandAncestors(setName: string): void {
+  const parts = setName.split("/");
+  for (let i = 1; i < parts.length; i++) {
+    collapsedGroups.delete(parts.slice(0, i).join("/"));
+  }
+}
+
 // ── Alias editor ephemeral state ─────────────────────────────────────────
 
 interface AliasEditorState {
@@ -261,7 +347,11 @@ function selectSet(setId: string | null): void {
     el("view-sets-overview").classList.add("hidden");
     el("view-tokens").classList.remove("hidden");
     const set = state.sets.find((s) => s.id === setId);
-    if (set) el("breadcrumb-set-name").textContent = set.name;
+    if (set) {
+      el("breadcrumb-set-name").textContent = set.name;
+      // Auto-expand all ancestor groups so the selected leaf is visible.
+      expandAncestors(set.name);
+    }
     // Clear previous tokens while loading and reset sort to type
     state.tokens = [];
     state.sortKey = "type";
@@ -273,10 +363,8 @@ function selectSet(setId: string | null): void {
     el("view-tokens").classList.add("hidden");
   }
 
-  // Update sidebar highlight
-  document.querySelectorAll<HTMLElement>(".set-item").forEach((item) => {
-    item.classList.toggle("active", item.dataset.setId === setId);
-  });
+  // Re-render sidebar to reflect new active state and any ancestor expansion.
+  renderSidebar();
 }
 
 function toggleSidebar(): void {
@@ -287,6 +375,31 @@ function toggleSidebar(): void {
 // ════════════════════════════════════════════════════════════════════════
 //  SIDEBAR RENDERING
 // ════════════════════════════════════════════════════════════════════════
+
+// Cube-shaped set icon matching Penpot's component icon style.
+const ICON_SET_SVG = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 1.5L13.5 4.75V11.25L8 14.5L2.5 11.25V4.75Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M2.5 4.75L8 8L13.5 4.75" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 8V14.5" stroke="currentColor" stroke-width="1.3"/></svg>`;
+const ICON_CHEVRON_RIGHT = `<svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ICON_CHEVRON_DOWN  = `<svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+function renderTreeNodes(nodes: TreeNode[], depth: number): string {
+  return nodes
+    .map((node) => {
+      const indent = depth * 14;
+      if (node.kind === "group") {
+        const isExpanded = !collapsedGroups.has(node.path);
+        const isActive   = node.hasSet && node.setId === state.selectedSetId;
+        const children   = isExpanded
+          ? `<ul class="set-tree-children">${renderTreeNodes(node.children, depth + 1)}</ul>`
+          : "";
+        const setIcon = node.hasSet ? `<span class="set-icon">${ICON_SET_SVG}</span>` : "";
+        return `<li class="set-tree-group${isActive ? " active" : ""}" data-group-path="${esc(node.path)}"${node.hasSet ? ` data-set-id="${esc(node.setId!)}"` : ""}><div class="set-tree-group-row" style="padding-left:${indent + 10}px"><button class="set-tree-chevron" data-toggle-group="${esc(node.path)}" aria-expanded="${isExpanded}" aria-label="${isExpanded ? "Collapse" : "Expand"} ${esc(node.label)}">${isExpanded ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT}</button>${setIcon}<span class="set-name">${esc(node.label)}</span></div>${children}</li>`;
+      } else {
+        const isActive = node.setId === state.selectedSetId;
+        return `<li class="set-item${isActive ? " active" : ""}" data-set-id="${esc(node.setId)}" title="${esc(node.fullName)}" role="option" aria-selected="${isActive}" style="padding-left:${indent + 10}px"><span class="set-icon">${ICON_SET_SVG}</span><span class="set-name">${esc(node.label)}</span></li>`;
+      }
+    })
+    .join("");
+}
 
 function renderSidebar(): void {
   el("sidebar-sets-count").textContent = String(state.sets.length);
@@ -303,35 +416,53 @@ function renderSidebar(): void {
     listEl.innerHTML = `<li class="sets-empty-state body-s">${
       query ? "No sets match your search." : "No sets yet."
     }</li>`;
-    return;
-  }
+  } else {
+    const tree = buildSetTree(filtered);
+    listEl.innerHTML = renderTreeNodes(tree, 0);
 
-  listEl.innerHTML = filtered
-    .map(
-      (set) => `
-    <li class="set-item${set.id === state.selectedSetId ? " active" : ""}"
-        data-set-id="${esc(set.id)}"
-        title="${esc(set.name)}"
-        role="option"
-        aria-selected="${set.id === state.selectedSetId}">
-      <span class="set-icon">
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
-          <path d="M2.5 6.5h11" stroke="currentColor" stroke-width="1.3"/>
-        </svg>
-      </span>
-      <span class="set-name">${esc(set.name)}</span>
-    </li>`
-    )
-    .join("");
-
-  listEl.querySelectorAll<HTMLElement>(".set-item").forEach((item) => {
-    item.addEventListener("click", () => selectSet(item.dataset.setId!));
-    item.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      showSetContextMenu(e as MouseEvent, item.dataset.setId!);
+    // Leaf set items: click selects, right-click opens context menu.
+    listEl.querySelectorAll<HTMLElement>(".set-item[data-set-id]").forEach((item) => {
+      item.addEventListener("click", () => selectSet(item.dataset.setId!));
+      item.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        showSetContextMenu(e as MouseEvent, item.dataset.setId!);
+      });
     });
-  });
+
+    // Chevron buttons toggle expand/collapse without triggering selection.
+    listEl.querySelectorAll<HTMLElement>("[data-toggle-group]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const path = (btn as HTMLElement).dataset.toggleGroup!;
+        if (collapsedGroups.has(path)) collapsedGroups.delete(path);
+        else collapsedGroups.add(path);
+        renderSidebar();
+      });
+    });
+
+    // Group rows: click toggles expand/collapse; also selects when group is a real set.
+    listEl.querySelectorAll<HTMLElement>(".set-tree-group-row").forEach((row) => {
+      const groupLi = row.closest<HTMLElement>(".set-tree-group");
+      if (!groupLi) return;
+      row.addEventListener("click", (e) => {
+        if ((e.target as HTMLElement).closest("[data-toggle-group]")) return;
+        const path = groupLi.dataset.groupPath!;
+        if (collapsedGroups.has(path)) collapsedGroups.delete(path);
+        else collapsedGroups.add(path);
+        if (groupLi.dataset.setId) {
+          selectSet(groupLi.dataset.setId);
+        } else {
+          renderSidebar();
+        }
+      });
+      if (groupLi.dataset.setId) {
+        row.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          showSetContextMenu(e as MouseEvent, groupLi.dataset.setId!);
+        });
+      }
+    });
+  }
 
   // Themes
   const themesDesc = el("themes-description");
@@ -378,12 +509,7 @@ function renderOverview(): void {
     .map(
       (set) => `
     <div class="set-card" data-set-id="${esc(set.id)}">
-      <span class="set-card-icon">
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
-          <path d="M2.5 6.5h11" stroke="currentColor" stroke-width="1.3"/>
-        </svg>
-      </span>
+      <span class="set-card-icon"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 1.5L13.5 4.75V11.25L8 14.5L2.5 11.25V4.75Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M2.5 4.75L8 8L13.5 4.75" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 8V14.5" stroke="currentColor" stroke-width="1.3"/></svg></span>
       <span class="set-card-name">${esc(set.name)}</span>
       <div class="set-card-meta">
         <span class="set-card-count">
@@ -580,14 +706,14 @@ function compositeSubValueHtml(value: string): string {
 
   if (isAlias(value)) {
     const name = value.trim().slice(1, -1);
-    return `<span class="alias-chip alias-chip--mini" title="${esc(value)}"><span class="alias-chip-name">${esc(name)}</span></span>`;
+    return `<span class="alias-chip" title="${esc(value)}"><span class="alias-chip-name">${esc(name)}</span></span>`;
   }
 
   if (/\{[^{}]+\}/.test(value)) {
     // Mixed value: plain text interleaved with {alias} references
     const parts = parseMixedValue(value).map((seg) => {
       if (seg.kind === "alias") {
-        return `<span class="alias-chip alias-chip--mini" title="{${esc(seg.name)}}"><span class="alias-chip-name">${esc(seg.name)}</span></span>`;
+        return `<span class="alias-chip" title="{${esc(seg.name)}}"><span class="alias-chip-name">${esc(seg.name)}</span></span>`;
       }
       return `<span class="cprop-val">${esc(seg.content)}</span>`;
     });
