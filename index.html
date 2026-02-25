@@ -157,6 +157,10 @@
                   <circle cx="12.5" cy="8" r="1.2" fill="currentColor"/>
                 </svg>
               </button>
+              <!-- Exit comparison mode button (hidden unless compare mode is active) -->
+              <button class="compare-exit-btn hidden" id="compare-exit-btn" type="button">
+                Exit comparison
+              </button>
             </div>
             <div class="main-header-right">
               <div class="search-wrapper">
@@ -172,7 +176,7 @@
           </div>
 
           <!-- Token table -->
-          <div class="tokens-table-wrap">
+          <div class="tokens-table-wrap" id="tokens-table-wrap">
             <!-- Table header -->
             <div class="tokens-table-header" role="row">
               <div class="tcol-check" data-col="0" role="columnheader">
@@ -235,6 +239,12 @@
             <div id="tokens-table-body" class="tokens-table-body" role="rowgroup">
               <div class="empty-state-msg body-s">Select a set to view its tokens.</div>
             </div>
+          </div>
+
+          <!-- Compare table (hidden by default; shown when compare mode is active) -->
+          <div class="compare-table-wrap hidden" id="compare-table-wrap">
+            <div class="compare-table-header" id="compare-table-header" role="row"></div>
+            <div class="compare-table-body" id="compare-table-body" role="rowgroup"></div>
           </div>
         </div>
 

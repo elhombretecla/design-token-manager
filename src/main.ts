@@ -35,6 +35,17 @@ const state = {
 // ── Bulk-selection state ──────────────────────────────────────────────────
 const selectedTokenIds = new Set<string>();
 
+// ── Compare-mode state ────────────────────────────────────────────────────
+// Isolated from `state` because it is UI-only (not synced to the plugin).
+const compareState = {
+  active: false,
+  primarySetId: null as string | null,
+  comparedSetIds: [] as string[],
+  // O(1) token-by-name lookup per compared set.  Populated when tokens-loaded
+  // arrives for a compared set; cleared on removeComparedSet / exitCompareMode.
+  comparedTokenMaps: new Map<string, Map<string, SerializedToken>>(),
+};
+
 // ── Set tree expansion state ──────────────────────────────────────────────
 // Stores group.path values for groups that are manually collapsed.
 // Groups are expanded by default; only those explicitly closed are tracked here.
@@ -281,7 +292,17 @@ window.addEventListener("message", (event: MessageEvent) => {
     case "tokens-loaded":
       if (msg.setId === state.selectedSetId) {
         state.tokens = msg.tokens;
-        renderTokenTable();
+        if (compareState.active) {
+          renderCompareTable();
+        } else {
+          renderTokenTable();
+        }
+      } else if (compareState.active && compareState.comparedSetIds.includes(msg.setId)) {
+        // Build O(1) name→token map for the newly loaded compared set.
+        const nameMap = new Map<string, SerializedToken>();
+        for (const t of msg.tokens) nameMap.set(t.name, t);
+        compareState.comparedTokenMaps.set(msg.setId, nameMap);
+        renderCompareTable();
       }
       break;
 
@@ -292,25 +313,46 @@ window.addEventListener("message", (event: MessageEvent) => {
       renderOverview();
       // If active set was deleted, go back to overview
       if (state.selectedSetId && !state.sets.find((s) => s.id === state.selectedSetId)) {
-        selectSet(null);
+        selectSet(null); // also exits compare mode via selectSet
       } else if (state.selectedSetId) {
         // Refresh breadcrumb name in case it was renamed
         const set = state.sets.find((s) => s.id === state.selectedSetId);
         if (set) el("breadcrumb-set-name").textContent = set.name;
+      }
+      // If in compare mode, drop any compared sets that were deleted and
+      // re-render so column headers reflect any renames.
+      if (compareState.active) {
+        const existingIds = new Set(state.sets.map((s) => s.id));
+        const removed = compareState.comparedSetIds.filter((id) => !existingIds.has(id));
+        for (const id of removed) {
+          compareState.comparedSetIds = compareState.comparedSetIds.filter((i) => i !== id);
+          compareState.comparedTokenMaps.delete(id);
+        }
+        renderCompareTable();
       }
       break;
 
     case "tokens-updated":
       if (msg.setId === state.selectedSetId) {
         state.tokens = msg.tokens;
-        // Prune selections for tokens that no longer exist
-        const validIds = new Set(msg.tokens.map((t) => t.id));
-        for (const id of [...selectedTokenIds]) {
-          if (!validIds.has(id)) selectedTokenIds.delete(id);
+        if (compareState.active) {
+          renderCompareTable();
+          renderSidebar();
+        } else {
+          // Prune selections for tokens that no longer exist
+          const validIds = new Set(msg.tokens.map((t) => t.id));
+          for (const id of [...selectedTokenIds]) {
+            if (!validIds.has(id)) selectedTokenIds.delete(id);
+          }
+          renderTokenTable();
+          renderSidebar();
         }
-        renderTokenTable();
-        // Also refresh sidebar count
-        renderSidebar();
+      } else if (compareState.active && compareState.comparedSetIds.includes(msg.setId)) {
+        // Keep a compared set's token map fresh if it receives a push update.
+        const nameMap = new Map<string, SerializedToken>();
+        for (const t of msg.tokens) nameMap.set(t.name, t);
+        compareState.comparedTokenMaps.set(msg.setId, nameMap);
+        renderCompareTable();
       }
       break;
 
@@ -345,6 +387,12 @@ window.addEventListener("message", (event: MessageEvent) => {
 // ════════════════════════════════════════════════════════════════════════
 
 function selectSet(setId: string | null): void {
+  // Navigating to a different set while in compare mode would leave the
+  // comparison columns pointing at the wrong primary — exit silently.
+  if (compareState.active && setId !== state.selectedSetId) {
+    exitCompareModeQuiet();
+  }
+
   state.selectedSetId = setId;
   selectedTokenIds.clear();
 
@@ -1595,6 +1643,8 @@ interface MenuItem {
   icon: string;
   action: () => void;
   danger?: boolean;
+  /** If true, render a thin separator line immediately before this item. */
+  divider?: boolean;
 }
 
 let contextCleanup: (() => void) | null = null;
@@ -1604,23 +1654,26 @@ function showContextMenu(x: number, y: number, items: MenuItem[]): void {
 
   const menu = el("context-menu");
   menu.innerHTML = items
-    .map(
-      (item, i) => `
-    <div class="context-menu-item${item.danger ? " danger" : ""}"
+    .map((item, i) => {
+      const dividerHtml = item.divider
+        ? `<div class="context-menu-divider" aria-hidden="true"></div>`
+        : "";
+      return `${dividerHtml}<div class="context-menu-item${item.danger ? " danger" : ""}"
          data-idx="${i}" role="menuitem" tabindex="0">
       ${item.icon}
       <span>${esc(item.label)}</span>
-    </div>`
-    )
+    </div>`;
+    })
     .join("");
 
   menu.classList.remove("hidden");
 
-  // Smart positioning
+  // Smart positioning — account for dividers adding ~9 px each
+  const dividerCount = items.filter((i) => i.divider).length;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const mW = 160;
-  const mH = items.length * 38 + 8;
+  const mH = items.length * 38 + dividerCount * 9 + 8;
   menu.style.left = `${Math.min(x, vw - mW - 4)}px`;
   menu.style.top = `${Math.min(y, vh - mH - 4)}px`;
 
@@ -1655,6 +1708,7 @@ const ICON_DUPLICATE = `<svg width="13" height="13" viewBox="0 0 16 16" fill="no
 const ICON_DELETE = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 5h10M6 5V3h4v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 5 12 13H4L3 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const ICON_EDIT = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10.5 2.5 13.5 5.5 6 13H3v-3l7.5-7.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>`;
 const ICON_MOVE = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13 8H3M10 5l3 3-3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ICON_COMPARE = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="3" width="5" height="10" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9.5" y="3" width="5" height="10" rx="1" stroke="currentColor" stroke-width="1.3"/></svg>`;
 
 function showSetContextMenu(e: MouseEvent, setId: string): void {
   const set = state.sets.find((s) => s.id === setId);
@@ -1675,6 +1729,12 @@ function showSetContextMenu(e: MouseEvent, setId: string): void {
       icon: ICON_DELETE,
       danger: true,
       action: () => showDeleteSetConfirm(set),
+    },
+    {
+      label: "Compare sets",
+      icon: ICON_COMPARE,
+      divider: true,
+      action: () => enterCompareMode(setId),
     },
   ]);
 }
@@ -3183,6 +3243,250 @@ function showMathInfoModal(): void {
 }
 
 // ════════════════════════════════════════════════════════════════════════
+//  COMPARE MODE
+//
+//  enterCompareMode(setId)  – activates comparison UI for the given primary set.
+//  exitCompareModeQuiet()   – tears down compare state/UI without re-rendering
+//                             the token table (used internally before another
+//                             render is about to happen anyway).
+//  exitCompareMode()        – same + calls renderTokenTable() to restore normal view.
+//  addComparedSet(setId)    – appends a compared column; requests tokens from plugin.
+//  removeComparedSet(setId) – removes a compared column.
+//  renderCompareTable()     – full render of compare header + body.
+//  valueCellHtmlReadOnly()  – non-interactive variant of valueCellHtml (no alias editor).
+//  showAddSetDropdown()     – shows a context-menu picker of addable sets.
+// ════════════════════════════════════════════════════════════════════════
+
+/** Non-interactive value cell — used in comparison columns so no alias editor opens. */
+function valueCellHtmlReadOnly(token: SerializedToken): string {
+  if (token.type === "typography") {
+    // Pass no tokenId → compositeSubValueHtml renders non-interactive chips
+    return compositeTypographyPreviewHtml(normalizeTypographyValueToForm(token.value));
+  }
+  if (token.type === "shadow") {
+    return compositeShadowPreviewHtml(normalizeShadowValueToPreview(token.value));
+  }
+  if (isAlias(token.value)) {
+    const aliasName = token.value.trim().slice(1, -1);
+    const resolvedBg = token.type === "color" ? (token.resolvedValue ?? "") : "";
+    const swatchHtml = resolvedBg
+      ? `<span class="color-swatch" style="background:${esc(resolvedBg)}" aria-hidden="true"></span>`
+      : "";
+    return `<span class="alias-chip" title="${esc(token.value)}">${swatchHtml}<span class="alias-chip-name">${esc(aliasName)}</span></span>`;
+  }
+  if (!/\{[^{}]+\}/.test(token.value)) {
+    return `${colorSwatchHtml(token)}<span class="token-value-text" title="${esc(token.value)}">${esc(token.value)}</span>`;
+  }
+  // Mixed value — render alias refs as mini (non-interactive) chips
+  const parts = parseMixedValue(token.value).map((seg) => {
+    if (seg.kind === "alias") {
+      return `<span class="alias-chip" title="{${esc(seg.name)}}"><span class="alias-chip-name">${esc(seg.name)}</span></span>`;
+    }
+    return `<span class="mixed-value-text">${esc(seg.content)}</span>`;
+  });
+  return `<div class="mixed-value-cell">${parts.join("")}</div>`;
+}
+
+/** Render (or re-render) the full comparison table header and body. */
+function renderCompareTable(): void {
+  if (!compareState.active) return;
+  const headerEl = el("compare-table-header");
+  const bodyEl   = el("compare-table-body");
+  const wrapEl   = el("compare-table-wrap");
+  if (!headerEl || !bodyEl || !wrapEl) return;
+
+  const N = compareState.comparedSetIds.length;
+  // Grid: [170px name] [minmax(120px,1fr) primary] [same × N compared] [110px add-set]
+  const colTemplate = `170px repeat(${1 + N}, minmax(120px, 1fr)) 110px`;
+  wrapEl.style.setProperty("--cmp-col-template", colTemplate);
+
+  // ── Header ──────────────────────────────────────────────────────────────
+  const otherSets   = state.sets.filter(
+    (s) => s.id !== compareState.primarySetId && !compareState.comparedSetIds.includes(s.id)
+  );
+  const addDisabled = otherSets.length === 0;
+  const addTitle    = addDisabled ? "No other sets available" : "Add a set to compare";
+
+  const comparedHeaders = compareState.comparedSetIds
+    .map((setId) => {
+      const setName = state.sets.find((s) => s.id === setId)?.name ?? setId;
+      return `<div class="cmp-th cmp-th-compared" data-compare-set-id="${esc(setId)}">
+        <span class="th-label">${esc(`Value (${setName})`)}</span>
+        <button class="cmp-col-remove-btn icon-btn" data-remove-set-id="${esc(setId)}"
+                title="Remove ${esc(setName)}" aria-label="Remove ${esc(setName)}">
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M4 4 12 12M12 4 4 12" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>`;
+    })
+    .join("");
+
+  headerEl.innerHTML = `
+    <div class="cmp-th cmp-th-name body-s">Name</div>
+    <div class="cmp-th cmp-th-primary body-s">
+      <span class="th-label">Value</span>
+    </div>
+    ${comparedHeaders}
+    <div class="cmp-th cmp-th-add">
+      <button class="cmp-add-set-btn" id="cmp-add-set-btn" type="button"
+              ${addDisabled ? "disabled" : ""} title="${esc(addTitle)}">+ Add set</button>
+    </div>`;
+
+  // Wire remove buttons
+  headerEl.querySelectorAll<HTMLElement>("[data-remove-set-id]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeComparedSet(btn.dataset.removeSetId!);
+    });
+  });
+
+  // Wire add-set button
+  const addBtn = el("cmp-add-set-btn");
+  if (addBtn && !addDisabled) {
+    addBtn.addEventListener("click", (e) => showAddSetDropdown(e as MouseEvent));
+  }
+
+  // ── Body ────────────────────────────────────────────────────────────────
+  const primaryTokens = getSortedTokens(state.tokens);
+
+  if (primaryTokens.length === 0) {
+    bodyEl.innerHTML = `<div class="empty-state-msg body-s">No tokens yet.</div>`;
+    return;
+  }
+
+  const rows = primaryTokens
+    .map((token) => {
+      const comparedCells = compareState.comparedSetIds
+        .map((setId) => {
+          const tokenMap = compareState.comparedTokenMaps.get(setId);
+          if (!tokenMap) {
+            // Tokens still loading for this set
+            return `<div class="cmp-td cmp-td-loading">—</div>`;
+          }
+          const compToken = tokenMap.get(token.name);
+          if (!compToken) {
+            return `<div class="cmp-td cmp-td-missing">No tokens with the same name in this set.</div>`;
+          }
+          return `<div class="cmp-td"><div class="col-value-inner">${valueCellHtmlReadOnly(compToken)}</div></div>`;
+        })
+        .join("");
+
+      return `<div class="cmp-row" role="row">
+        <div class="cmp-td cmp-td-name">
+          <span class="col-name-text" title="${esc(token.name)}">${esc(token.name)}</span>
+        </div>
+        <div class="cmp-td">
+          <div class="col-value-inner">${valueCellHtmlReadOnly(token)}</div>
+        </div>
+        ${comparedCells}
+        <div class="cmp-td"></div>
+      </div>`;
+    })
+    .join("");
+
+  bodyEl.innerHTML = rows;
+}
+
+/**
+ * Show a dropdown (reusing the existing context-menu) listing sets that can
+ * be added to the comparison.  Positioned below the "Add set" button.
+ */
+function showAddSetDropdown(e: MouseEvent): void {
+  const btn  = e.currentTarget as HTMLElement;
+  const rect = btn.getBoundingClientRect();
+  const otherSets = state.sets.filter(
+    (s) => s.id !== compareState.primarySetId && !compareState.comparedSetIds.includes(s.id)
+  );
+  if (otherSets.length === 0) return;
+  showContextMenu(
+    rect.left,
+    rect.bottom + 4,
+    otherSets.map((set) => ({
+      label: set.name,
+      icon: ICON_SET_SVG,
+      action: () => addComparedSet(set.id),
+    }))
+  );
+}
+
+/** Apply all compare-mode UI changes without triggering a table re-render. */
+function exitCompareModeQuiet(): void {
+  compareState.active        = false;
+  compareState.primarySetId  = null;
+  compareState.comparedSetIds = [];
+  compareState.comparedTokenMaps.clear();
+
+  el("tokens-table-wrap").classList.remove("hidden");
+  el("compare-table-wrap").classList.add("hidden");
+  el("compare-exit-btn").classList.add("hidden");
+  el("new-token-btn").classList.remove("hidden");
+  el("set-more-btn").classList.remove("hidden");
+}
+
+/** Exit compare mode and restore the normal token table. */
+function exitCompareMode(): void {
+  exitCompareModeQuiet();
+  renderTokenTable();
+}
+
+/**
+ * Enter comparison mode for `primarySetId`.
+ *
+ * If the given set is not currently selected, selectSet() is called first
+ * so that tokens are loaded.  compareState.active is set to true only after
+ * selectSet() returns so that selectSet's own exitCompareModeQuiet() call
+ * (triggered when navigating away) does not interfere.
+ *
+ * Edge case — user invokes "Compare sets" on a different set while already in
+ * compare mode: the old compare state is cleared and compare mode restarts
+ * with the new primary set.
+ */
+function enterCompareMode(primarySetId: string): void {
+  // Reset silently so selectSet() below doesn't trigger another exitCompareModeQuiet()
+  compareState.active        = false;
+  compareState.primarySetId  = null;
+  compareState.comparedSetIds = [];
+  compareState.comparedTokenMaps.clear();
+
+  // Navigate to the set (loads tokens, shows token view)
+  if (state.selectedSetId !== primarySetId) {
+    selectSet(primarySetId);
+  }
+
+  // Activate compare mode
+  compareState.active       = true;
+  compareState.primarySetId = primarySetId;
+
+  // Switch table views
+  el("tokens-table-wrap").classList.add("hidden");
+  el("compare-table-wrap").classList.remove("hidden");
+  el("compare-exit-btn").classList.remove("hidden");
+  el("new-token-btn").classList.add("hidden");
+  el("set-more-btn").classList.add("hidden");
+
+  renderCompareTable();
+}
+
+/** Append a new compared-set column and request its tokens from the plugin. */
+function addComparedSet(setId: string): void {
+  if (compareState.comparedSetIds.includes(setId)) return;
+  compareState.comparedSetIds.push(setId);
+  // Tokens will arrive via the tokens-loaded message handler which will
+  // call renderCompareTable() once the name-map is built.
+  sendToPlugin({ type: "get-tokens", setId });
+  renderCompareTable(); // show the loading placeholder immediately
+}
+
+/** Remove a compared-set column. */
+function removeComparedSet(setId: string): void {
+  compareState.comparedSetIds = compareState.comparedSetIds.filter((id) => id !== setId);
+  compareState.comparedTokenMaps.delete(setId);
+  renderCompareTable();
+}
+
+// ════════════════════════════════════════════════════════════════════════
 //  GLOBAL EVENT LISTENERS
 // ════════════════════════════════════════════════════════════════════════
 
@@ -3204,6 +3508,9 @@ function bindGlobalListeners(): void {
 
   // Math info
   el("math-info-btn")?.addEventListener("click", showMathInfoModal);
+
+  // Exit comparison mode
+  el("compare-exit-btn")?.addEventListener("click", exitCompareMode);
 
   // Toggle sidebar
   el("toggle-sidebar-overview")?.addEventListener("click", toggleSidebar);

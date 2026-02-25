@@ -689,6 +689,7 @@ html.col-resizing * {
   min-width: 0;
   flex: 1;
   transition: background-color 0.12s;
+  max-width: fit-content;
 }
 
 .alias-chip:hover {
@@ -1351,6 +1352,191 @@ html.col-resizing * {
 
 .move-select-wrapper .select {
   flex: 1;
+}
+
+/* ── Context-menu divider ───────────────────────────────────────────────── */
+.context-menu-divider {
+  height: 1px;
+  background-color: var(--background-quaternary);
+  margin: 4px 4px;
+}
+
+/* ── Compare exit button ────────────────────────────────────────────────── */
+.compare-exit-btn {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  font-family: inherit;
+  padding: 4px 10px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--background-quaternary);
+  background-color: var(--background-secondary);
+  color: var(--foreground-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background-color 0.12s, color 0.12s;
+}
+
+.compare-exit-btn:hover {
+  background-color: var(--background-tertiary);
+  color: var(--foreground-primary);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   COMPARE TABLE
+   ════════════════════════════════════════════════════════════════════════ */
+
+/*
+ * Column template is set dynamically by JS via --cmp-col-template.
+ * Default: 170px (name) | 1fr (primary value) | 110px (add-set button area).
+ * Each added compared set appends another minmax(120px,1fr) column.
+ */
+.compare-table-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  --cmp-col-template: 170px 1fr 110px;
+}
+
+.compare-table-header,
+.cmp-row {
+  display: grid;
+  grid-template-columns: var(--cmp-col-template);
+  min-width: 0;
+}
+
+/* Header row */
+.compare-table-header {
+  border-bottom: 1px solid var(--background-quaternary);
+  height: 36px;
+  position: sticky;
+  top: 0;
+  background-color: var(--background-primary);
+  z-index: 2;
+  flex-shrink: 0;
+}
+
+/* Scrollable body */
+.compare-table-body {
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* Header cells */
+.cmp-th {
+  display: flex;
+  align-items: center;
+  border-right: 1px solid var(--background-secondary);
+  gap: 4px;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  color: var(--foreground-secondary);
+  padding: 0 8px;
+  overflow: hidden;
+  min-width: 0;
+  position: relative;
+  height: 100%;
+}
+
+.cmp-th-name {}
+
+.cmp-th-primary {}
+
+/* Compared-set header: show the "−" remove button on hover */
+.cmp-th-compared {
+  gap: 4px;
+}
+
+.cmp-col-remove-btn {
+  opacity: 0;
+  flex-shrink: 0;
+  transition: opacity 0.12s;
+  width: 22px;
+  height: 22px;
+}
+
+.cmp-th-compared:hover .cmp-col-remove-btn {
+  opacity: 1;
+}
+
+/* "Add set" header cell */
+.cmp-th-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+}
+
+.cmp-add-set-btn {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  font-family: inherit;
+  padding: 3px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--background-quaternary);
+  background-color: var(--background-secondary);
+  color: var(--foreground-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.12s, color 0.12s;
+}
+
+.cmp-add-set-btn:hover:not(:disabled) {
+  background-color: var(--background-tertiary);
+  color: var(--foreground-primary);
+}
+
+.cmp-add-set-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Data rows */
+.cmp-row {
+  min-height: 34px;
+  border-bottom: 1px solid var(--background-tertiary);
+  align-items: center;
+  padding: 4px 0;
+  transition: background-color 0.1s;
+}
+
+.cmp-row:hover {
+  background-color: var(--background-tertiary);
+}
+
+/* Data cells */
+.cmp-td {
+  overflow: hidden;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.cmp-td-name .col-name-text {
+  font-size: var(--font-size-s);
+  color: var(--foreground-primary);
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Placeholder shown when a token name is not found in the compared set */
+.cmp-td-missing {
+  font-size: var(--font-size-xs);
+  color: var(--foreground-secondary);
+  font-style: italic;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Loading indicator while compared set tokens are being fetched */
+.cmp-td-loading {
+  font-size: var(--font-size-s);
+  color: var(--foreground-secondary);
 }
 
 /* ── Sidebar footer (Math info link) ────────────────────────────────────── */
