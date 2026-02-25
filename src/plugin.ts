@@ -145,6 +145,56 @@ function serializeTypographyValue(rawValue: unknown): string {
   try { return JSON.stringify(rawValue) ?? ""; } catch { return ""; }
 }
 
+// Shadow token values are stored in Penpot as ClojureScript maps exposed
+// through a JS Proxy, same as typography.  JSON.stringify on a Proxy often
+// returns "{}" because the underlying CLJS properties are not JS-enumerable.
+// We bypass that by explicitly reading each known property name by string key.
+//
+// Penpot may expose shadow fields under several key variants:
+//   API canonical:  x, y, blur, spread, color, type
+//   CLJS kebab:     offset-x, offset-y
+//   camelCase:      offsetX, offsetY
+//
+// We probe all variants and emit under canonical output keys.
+const SHADOW_KEY_VARIANTS: ReadonlyArray<readonly [string, string]> = [
+  ["type",      "type"],
+  ["x",         "x"],
+  ["offsetX",   "x"],
+  ["offset-x",  "x"],
+  ["y",         "y"],
+  ["offsetY",   "y"],
+  ["offset-y",  "y"],
+  ["blur",      "blur"],
+  ["spread",    "spread"],
+  ["color",     "color"],
+] as const;
+
+function serializeShadowValue(rawValue: unknown): string {
+  if (rawValue == null)             return "";
+  if (typeof rawValue === "string") return rawValue;
+
+  const obj = rawValue as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+
+  for (const [srcKey, outKey] of SHADOW_KEY_VARIANTS) {
+    if (outKey in out) continue; // already captured a value for this output key
+    try {
+      const val = obj[srcKey];
+      if (val !== undefined && val !== null) out[outKey] = val;
+    } catch {
+      // Proxy getter threw; skip
+    }
+  }
+
+  if (Object.keys(out).length > 0) {
+    return JSON.stringify(out);
+  }
+
+  // Last resort: generic stringify. May produce "{}" for opaque proxies,
+  // but the explicit-key path above should always win for real Penpot tokens.
+  try { return JSON.stringify(rawValue) ?? ""; } catch { return ""; }
+}
+
 // Composite token types (typography, shadow) must be passed to addToken as
 // plain objects, not JSON strings.  If Penpot receives a string that starts
 // with "{" it treats the whole thing as an alias reference (like
@@ -181,19 +231,23 @@ function serializeToken(token: IToken) {
     resolvedValue = token.resolvedValue != null
       ? (token.type === "typography"
           ? serializeTypographyValue(token.resolvedValue)
-          : valueToString(token.resolvedValue))
+          : token.type === "shadow"
+            ? serializeShadowValue(token.resolvedValue)
+            : valueToString(token.resolvedValue))
       : undefined;
   } catch {
     resolvedValue = undefined;
   }
 
-  // Use the proxy-safe serializer for typography so we always emit a real
-  // JSON object instead of "{}" when Penpot's ClojureScript proxy doesn't
-  // expose enumerable properties.
+  // Use proxy-safe serializers for composite token types (typography, shadow)
+  // so we always emit real JSON instead of "{}" when Penpot's ClojureScript
+  // proxy doesn't expose enumerable properties.
   const value =
     token.type === "typography"
       ? serializeTypographyValue(token.value)
-      : valueToString(token.value);
+      : token.type === "shadow"
+        ? serializeShadowValue(token.value)
+        : valueToString(token.value);
 
   // ── Debug log A ─────────────────────────────────────────────────────────
   // import.meta.env.DEV is replaced at build time by Vite → true in `npm run
@@ -204,6 +258,16 @@ function serializeToken(token: IToken) {
     try {
       console.debug(
         "[DTM-A] typography serialised  name='" + token.name + "'"
+          + "  typeof value=" + typeof token.value
+          + "  serialised=" + value,
+        "\n  raw value:", token.value,
+      );
+    } catch { /* never block serialization */ }
+  }
+  if (import.meta.env.DEV && token.type === "shadow") {
+    try {
+      console.debug(
+        "[DTM-A] shadow serialised  name='" + token.name + "'"
           + "  typeof value=" + typeof token.value
           + "  serialised=" + value,
         "\n  raw value:", token.value,

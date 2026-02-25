@@ -4,7 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "generate-fonts": "node scripts/generate-font-catalog.mjs",
+    "predev": "npm run generate-fonts",
     "dev": "vite build --watch",
+    "prebuild": "npm run generate-fonts",
     "build": "tsc && vite build"
   },
   "dependencies": {

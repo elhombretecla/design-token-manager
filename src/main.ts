@@ -1,4 +1,13 @@
 import "./style.css";
+import { FONT_CATALOG } from "./assets/fontCatalog.generated";
+
+// Pre-compute a flat sorted array of family names once at module load.
+// Used by the font picker to avoid re-mapping on every keystroke.
+const CATALOG_FAMILIES: string[] = FONT_CATALOG.map((f) => f.family);
+
+// Maximum catalog rows shown in the picker when no search query is active.
+// Prevents DOM overload; users narrow the list by typing.
+const CATALOG_MAX_UNFILTERED = 200;
 
 // ════════════════════════════════════════════════════════════════════════
 //  TYPES
@@ -695,23 +704,55 @@ function compositeShadowPreviewHtml(vals: Record<string, string>): string {
     return `<span class="composite-empty">—</span>`;
   }
   const parts: string[] = [];
+
+  // Shadow type badge (only shown when not the default "drop-shadow")
   if (vals.type && vals.type !== "drop-shadow") {
     parts.push(`<span class="cprop-badge">${esc(vals.type)}</span>`);
   }
+
+  // Color: alias chip if it is/contains an alias ref, otherwise a color swatch.
+  // This prevents "[object Object]" swatch backgrounds from broken proxies.
   if (vals.color) {
-    parts.push(`<span class="color-swatch" style="background:${esc(vals.color)}" aria-hidden="true"></span>`);
+    if (isAlias(vals.color) || /\{[^{}]+\}/.test(vals.color)) {
+      parts.push(
+        `<span class="cprop" title="Color: ${esc(vals.color)}">${TOKEN_TYPE_ICONS.color}${compositeSubValueHtml(vals.color)}</span>`
+      );
+    } else {
+      parts.push(
+        `<span class="color-swatch" style="background:${esc(vals.color)}" title="${esc(vals.color)}" aria-hidden="true"></span>`
+      );
+    }
   }
-  const xy = [vals.x, vals.y].filter(Boolean).join(" ");
-  if (xy) {
+
+  // X / Y: show together with the dimension icon, each value rendered through
+  // compositeSubValueHtml so that alias chips work (e.g. "{spacing.sm}").
+  if (vals.x || vals.y) {
+    const titleParts = [vals.x && `x: ${vals.x}`, vals.y && `y: ${vals.y}`].filter(Boolean);
     parts.push(
-      `<span class="cprop" title="X Y">${TOKEN_TYPE_ICONS.dimension}<span class="cprop-val">${esc(xy)}</span></span>`
+      `<span class="cprop" title="${esc(titleParts.join(", "))}">` +
+      TOKEN_TYPE_ICONS.dimension +
+      (vals.x ? compositeSubValueHtml(vals.x) : "") +
+      (vals.x && vals.y ? `<span class="cprop-sep">,</span>` : "") +
+      (vals.y ? compositeSubValueHtml(vals.y) : "") +
+      `</span>`
     );
   }
+
+  // Blur
   if (vals.blur) {
     parts.push(
-      `<span class="cprop" title="Blur: ${esc(vals.blur)}">${TOKEN_TYPE_ICONS.opacity}<span class="cprop-val">${esc(vals.blur)}</span></span>`
+      `<span class="cprop" title="Blur: ${esc(vals.blur)}">${TOKEN_TYPE_ICONS.opacity}${compositeSubValueHtml(vals.blur)}</span>`
     );
   }
+
+  // Spread (omit when zero / empty to keep the preview compact)
+  if (vals.spread && vals.spread !== "0") {
+    parts.push(
+      `<span class="cprop" title="Spread: ${esc(vals.spread)}">${TOKEN_TYPE_ICONS.dimension}${compositeSubValueHtml(vals.spread)}</span>`
+    );
+  }
+
+  if (parts.length === 0) return `<span class="composite-empty">—</span>`;
   return `<div class="composite-preview">${parts.join("")}</div>`;
 }
 
@@ -722,20 +763,20 @@ function resolvedValueCellHtml(token: SerializedToken): string {
     return compositeTypographyPreviewHtml(normalizeTypographyValueToForm(raw));
   }
   if (token.type === "shadow") {
-    return compositeShadowPreviewHtml(parseCompositeToken(raw));
+    return compositeShadowPreviewHtml(normalizeShadowValueToPreview(raw));
   }
   return `<span class="token-resolved-text" title="${esc(raw)}">${esc(raw)}</span>`;
 }
 
 function valueCellHtml(token: SerializedToken): string {
   // Composite types: render structured preview instead of raw JSON.
-  // Both table and modal now go through the same normalizeTypographyValueToForm
-  // adapter so key names are always consistent.
+  // Both table and modal go through the same normalizer adapter so key
+  // names are always consistent between the preview and the edit form.
   if (token.type === "typography") {
     return compositeTypographyPreviewHtml(normalizeTypographyValueToForm(token.value));
   }
   if (token.type === "shadow") {
-    return compositeShadowPreviewHtml(parseCompositeToken(token.value));
+    return compositeShadowPreviewHtml(normalizeShadowValueToPreview(token.value));
   }
 
   // Pure alias: entire value is a single {reference}
@@ -970,14 +1011,21 @@ function onFontPickerOutsideClick(e: MouseEvent): void {
 function renderFontPicker(): void {
   if (!fontPickerInput) return;
   const query = fontPickerInput.value.toLowerCase().trim();
-  const filter = (list: string[]) =>
-    query ? list.filter((f) => f.toLowerCase().includes(query)) : list;
 
-  const docFonts = filter(state.documentFonts);
-  // Show popular fonts that aren't already in the document section
-  const popularFonts = filter(
-    POPULAR_FONTS.filter((f) => !state.documentFonts.includes(f))
-  );
+  // Document fonts: always show all matches (usually a small set)
+  const docFonts = query
+    ? state.documentFonts.filter((f) => f.toLowerCase().includes(query))
+    : state.documentFonts;
+
+  // Catalog fonts: exclude anything already in the document section,
+  // apply the query filter, then cap the unfiltered list to avoid DOM overload.
+  const docFontSet = new Set(state.documentFonts);
+  const catalogBase = CATALOG_FAMILIES.filter((f) => !docFontSet.has(f));
+  const catalogMatches = query
+    ? catalogBase.filter((f) => f.toLowerCase().includes(query))
+    : catalogBase.slice(0, CATALOG_MAX_UNFILTERED);
+  const catalogTruncated =
+    !query && catalogBase.length > CATALOG_MAX_UNFILTERED;
 
   const renderItems = (fonts: string[]): string =>
     fonts
@@ -985,17 +1033,20 @@ function renderFontPicker(): void {
       .join("");
 
   const hasDoc = docFonts.length > 0;
-  const hasPop = popularFonts.length > 0;
+  const hasCat = catalogMatches.length > 0;
 
   const html =
-    !hasDoc && !hasPop
+    !hasDoc && !hasCat
       ? '<div class="fp-empty">No fonts match</div>'
       : (hasDoc
           ? `<div class="fp-section-header">Document Fonts</div>${renderItems(docFonts)}`
           : "") +
-        (hasDoc && hasPop ? '<div class="fp-divider"></div>' : "") +
-        (hasPop
-          ? `<div class="fp-section-header">Popular Fonts</div>${renderItems(popularFonts)}`
+        (hasDoc && hasCat ? '<div class="fp-divider"></div>' : "") +
+        (hasCat
+          ? `<div class="fp-section-header">Fonts</div>${renderItems(catalogMatches)}` +
+            (catalogTruncated
+              ? `<div class="fp-hint">Showing ${CATALOG_MAX_UNFILTERED} of ${catalogBase.length} — type to search all</div>`
+              : "")
           : "");
 
   // Create or reuse the dropdown element (attached to body to escape modal overflow)
@@ -1756,213 +1807,10 @@ function getTypeDef(value: string): TokenTypeDef {
   return TOKEN_TYPES.find((t) => t.value === value) ?? TOKEN_TYPES[0];
 }
 
-// ════════════════════════════════════════════════════════════════════════
-//  POPULAR FONTS  (static list — no API call needed)
-//  Shown in the Font Picker dropdown as a fallback / discovery aid.
-//  Document fonts (scanned live) are shown above this list.
-// ════════════════════════════════════════════════════════════════════════
-const POPULAR_FONTS: string[] = [
-  "Abril Fatface",
-  "Acme",
-  "Aleo",
-  "Alegreya",
-  "Alegreya Sans",
-  "Alegreya SC",
-  "Alex Brush",
-  "Alfa Slab One",
-  "Almarai",
-  "Amiri",
-  "Andada Pro",
-  "Anonymous Pro",
-  "Anton",
-  "Archivo",
-  "Archivo Narrow",
-  "Arial",
-  "Arimo",
-  "Arvo",
-  "Asap",
-  "Assistant",
-  "Barlow",
-  "Barlow Condensed",
-  "Barlow Semi Condensed",
-  "Baskervville",
-  "Be Vietnam Pro",
-  "Bebas Neue",
-  "Bitter",
-  "Boogaloo",
-  "Bree Serif",
-  "Cabin",
-  "Cabin Condensed",
-  "Cairo",
-  "Cantarell",
-  "Cardo",
-  "Catamaran",
-  "Caveat",
-  "Chakra Petch",
-  "Changa",
-  "Chivo",
-  "Cinzel",
-  "Comfortaa",
-  "Cormorant",
-  "Cormorant Garamond",
-  "Courier New",
-  "Cousine",
-  "Crimson Pro",
-  "Crimson Text",
-  "Cuprum",
-  "Dancing Script",
-  "Darker Grotesque",
-  "DM Mono",
-  "DM Sans",
-  "DM Serif Display",
-  "DM Serif Text",
-  "Domine",
-  "Dosis",
-  "EB Garamond",
-  "Eczar",
-  "El Messiri",
-  "Encode Sans",
-  "Epilogue",
-  "Exo",
-  "Exo 2",
-  "Faustina",
-  "Figtree",
-  "Fira Code",
-  "Fira Sans",
-  "Fira Sans Condensed",
-  "Fjalla One",
-  "Francois One",
-  "Frank Ruhl Libre",
-  "Fredoka",
-  "Geologica",
-  "Georgia",
-  "Gloria Hallelujah",
-  "Gothic A1",
-  "Hammersmith One",
-  "Hanken Grotesk",
-  "Heebo",
-  "Helvetica",
-  "Hind",
-  "Hind Madurai",
-  "Hind Siliguri",
-  "IBM Plex Mono",
-  "IBM Plex Sans",
-  "IBM Plex Serif",
-  "Inconsolata",
-  "Indie Flower",
-  "Inter",
-  "JetBrains Mono",
-  "Josefin Sans",
-  "Josefin Slab",
-  "Jost",
-  "Julius Sans One",
-  "Kalam",
-  "Kanit",
-  "Karla",
-  "Kaushan Script",
-  "Kreon",
-  "Lato",
-  "Lexend",
-  "Lexend Deca",
-  "Libre Baskerville",
-  "Libre Caslon Text",
-  "Libre Franklin",
-  "Literata",
-  "Lobster",
-  "Lora",
-  "Luckiest Guy",
-  "Manrope",
-  "Markazi Text",
-  "Merriweather",
-  "Merriweather Sans",
-  "Montserrat",
-  "Montserrat Alternates",
-  "Mukta",
-  "Mulish",
-  "Nanum Gothic",
-  "Neuton",
-  "Noticia Text",
-  "Noto Sans",
-  "Noto Sans JP",
-  "Noto Sans KR",
-  "Noto Sans SC",
-  "Noto Serif",
-  "Noto Serif JP",
-  "Nunito",
-  "Nunito Sans",
-  "Old Standard TT",
-  "Open Sans",
-  "Oswald",
-  "Outfit",
-  "Overpass",
-  "Oxygen",
-  "Pacifico",
-  "Passion One",
-  "Patrick Hand",
-  "Permanent Marker",
-  "Philosopher",
-  "Piazzolla",
-  "Playfair Display",
-  "Playfair Display SC",
-  "Plus Jakarta Sans",
-  "Podkova",
-  "Poiret One",
-  "Poppins",
-  "Prata",
-  "Proza Libre",
-  "PT Mono",
-  "PT Sans",
-  "PT Sans Caption",
-  "PT Sans Narrow",
-  "PT Serif",
-  "Public Sans",
-  "Questrial",
-  "Quicksand",
-  "Rajdhani",
-  "Raleway",
-  "Readex Pro",
-  "Righteous",
-  "Roboto",
-  "Roboto Condensed",
-  "Roboto Flex",
-  "Roboto Mono",
-  "Roboto Slab",
-  "Rokkitt",
-  "Rubik",
-  "Russo One",
-  "Saira",
-  "Sarabun",
-  "Satisfy",
-  "Secular One",
-  "Sen",
-  "Shadows Into Light",
-  "Signika",
-  "Sora",
-  "Source Code Pro",
-  "Source Sans 3",
-  "Source Serif 4",
-  "Space Grotesk",
-  "Space Mono",
-  "Spectral",
-  "Syne",
-  "Tahoma",
-  "Tajawal",
-  "Teko",
-  "Times New Roman",
-  "Titillium Web",
-  "Trebuchet MS",
-  "Ubuntu",
-  "Ubuntu Condensed",
-  "Ubuntu Mono",
-  "Unbounded",
-  "Urbanist",
-  "Varela Round",
-  "Verdana",
-  "Vollkorn",
-  "Work Sans",
-  "Yanone Kaffeesatz",
-  "Zilla Slab",
-];
+// POPULAR_FONTS retired — replaced by the full FONT_CATALOG imported at the
+// top of this file (src/assets/fontCatalog.generated.ts, 1910+ fonts).
+// The picker now shows the full catalog in alphabetical order, capped at
+// CATALOG_MAX_UNFILTERED rows when no search query is active.
 
 // Builds the value fields section for shadow tokens
 function shadowFieldsHtml(x = "0", y = "4", blur = "8", spread = "0", color = "rgba(0,0,0,0.25)", type = "drop-shadow"): string {
@@ -2672,8 +2520,7 @@ function showNewTokenModal(initialType = "color"): void {
 //   • Array field values         → first element coerced to string
 //  All keys are normalised to the canonical TokenTypographyValueString names
 //  (fontFamilies, fontSizes, fontWeight, lineHeight, letterSpacing, textCase,
-//  textDecoration) via normalizeCompositeKey().
-//  Returns {} on any failure – never throws.
+//  textDecoration).  Returns {} on any failure – never throws.
 
 /**
  * Convert a ClojureScript/Transit proxy structure to a plain JS object or
@@ -2899,66 +2746,100 @@ function extractFirstString(val: unknown): string | undefined {
 }
 
 /**
- * Normalise a single key from any source format to the canonical
- * TokenTypographyValueString key names used by the Penpot plugin API.
+ * Extract a displayable color string from a shadow "color" value.
  *
- * Handles:
- *   Transit prefix  "~:font-family"  → strip "~:"  → "font-family"
- *   kebab-case      "font-family"    → camelCase   → "fontFamily"
- *   singular plural "fontFamily"     → remap       → "fontFamilies"
- *                   "fontSize"       → remap       → "fontSizes"
- *
- * The two remap entries are necessary because the API type
- * TokenTypographyValueString spells the keys as fontFamilies (plural)
- * and fontSizes (plural), while Penpot's internal EDN uses font-family /
- * font-size (which would naively camelCase to fontFamily / fontSize).
+ * Penpot may store shadow colors as plain CSS strings ("rgba(0,0,0,0.25)"),
+ * alias references ("{color.shadow}"), or nested Transit/CLJS maps.
+ * We handle all three without risking "[object Object]" in the output.
  */
-function normalizeCompositeKey(k: string): string {
-  // 1. Strip Transit "~:" / "~#" OR plain Clojure ":" keyword prefix
-  let stripped = k;
-  if (stripped.startsWith("~:") || stripped.startsWith("~#")) stripped = stripped.slice(2);
-  else if (stripped.startsWith(":")) stripped = stripped.slice(1);
-  // 2. kebab-case → camelCase  ("font-family" → "fontFamily")
-  const camel = stripped.replace(/-([a-z])/g, (_: string, c: string) => c.toUpperCase());
-  // 3. Map the two irregular singular forms to their plural API counterparts
-  if (camel === "fontFamily")  return "fontFamilies";
-  if (camel === "fontSize")    return "fontSizes";
-  return camel;
+function extractShadowColorString(val: unknown): string | undefined {
+  if (typeof val === "string") return val.trim() || undefined;
+
+  // Unwrap any Transit/CLJS wrapper first
+  const plain = transitToPlain(val);
+  if (typeof plain === "string") return (plain as string).trim() || undefined;
+
+  if (Array.isArray(plain)) {
+    for (const item of plain as unknown[]) {
+      const s = extractShadowColorString(item);
+      if (s) return s;
+    }
+    return undefined;
+  }
+
+  if (typeof plain === "object" && plain !== null) {
+    const obj = plain as Record<string, unknown>;
+    // Probe common property names that might hold the actual color string
+    for (const k of ["value", "color", "hex", "rgba", "name"]) {
+      if (typeof obj[k] === "string" && (obj[k] as string).trim()) {
+        return (obj[k] as string).trim();
+      }
+    }
+    // Fall back to extractFirstString for other shapes
+    return extractFirstString(plain);
+  }
+
+  return extractFirstString(val);
 }
 
-function parseCompositeToken(raw: string): Record<string, string> {
+/**
+ * Normalise any shadow token wire-format value → stable preview object.
+ *
+ * Single adapter used by BOTH the table composite preview and the Edit modal.
+ *
+ * Handles all serialisation variants Penpot may produce:
+ *   • Transit map  { $meta$, $cnt$, $arr$: [keyObj,val,…] }  (primary)
+ *   • API JSON     { type, x, y, blur, spread, color }
+ *   • EDN variants { "offset-x": …, "offset-y": … }
+ *   • Empty / alias strings → {}
+ *
+ * Output keys are always: x, y, blur, spread, color, type  (all optional).
+ * Values are kept as strings; aliases stay intact ("{color.xxx}").
+ */
+function normalizeShadowValueToPreview(raw: string): Record<string, string> {
   if (!raw) return {};
   const s = raw.trim();
-  // Must be an object literal, not an alias reference like {color.primary}
   if (!s.startsWith("{") || !s.endsWith("}")) return {};
 
-  let obj: Record<string, unknown>;
-  try {
-    const parsed = JSON.parse(s) as unknown;
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
-    // Flatten ClojureScript/Transit maps ({ $arr$: [keyObj, val, …] }) into
-    // plain JS objects before we try to read string keys off them.
-    const plain = transitToPlain(parsed);
-    if (typeof plain !== "object" || plain === null || Array.isArray(plain)) return {};
-    obj = plain as Record<string, unknown>;
-  } catch {
-    return {};
-  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(s); } catch { return {}; }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+
+  // Flatten ClojureScript/Transit maps into plain JS objects
+  const plain = transitToPlain(parsed);
+  if (typeof plain !== "object" || plain === null || Array.isArray(plain)) return {};
+  const m = plain as Record<string, unknown>;
 
   const result: Record<string, string> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    // Skip any residual Transit infrastructure keys just in case.
-    if (k.startsWith("$")) continue;
-    const normalKey = normalizeCompositeKey(k);
-    if (!normalKey) continue;
-    // Coerce value to string using extractFirstString so that nested Transit
-    // structures (e.g. font-family stored as a Transit vector of Transit maps)
-    // are safely unwrapped instead of producing "[object Object]".
-    // Keys with no extractable string value are omitted — callers treat absent
-    // keys as empty and show placeholder text instead.
-    const str = extractFirstString(v);
-    if (str !== undefined) result[normalKey] = str;
+
+  // Simple numeric/string fields with multiple possible key-name variants
+  const simpleFields: Array<[string[], string]> = [
+    [["x", "offset-x", "offsetX"],  "x"],
+    [["y", "offset-y", "offsetY"],  "y"],
+    [["blur"],                       "blur"],
+    [["spread"],                     "spread"],
+    [["type"],                       "type"],
+  ];
+
+  for (const [keys, outKey] of simpleFields) {
+    for (const k of keys) {
+      const v = m[k];
+      if (v === undefined || v === null) continue;
+      const str =
+        typeof v === "string" ? v.trim() :
+        typeof v === "number" ? String(v) :
+        undefined;
+      if (str !== undefined) { result[outKey] = str; break; }
+    }
   }
+
+  // Color: may be a plain CSS string, alias ref, or a nested Transit object
+  const rawColor = m["color"];
+  if (rawColor !== undefined && rawColor !== null) {
+    const colorStr = extractShadowColorString(rawColor);
+    if (colorStr) result.color = colorStr;
+  }
+
   return result;
 }
 
@@ -3136,10 +3017,108 @@ function typographyInspectorHtml(
     </details>`;
 }
 
+/**
+ * DEV-only inspector panel for Shadow tokens — mirrors typographyInspectorHtml.
+ *
+ * Shows: wire-format shape, raw Transit keys, semantic keys after
+ * transitToPlain(), pretty-printed JSON, and normalizeShadowValueToPreview()
+ * output.  Only called when import.meta.env.DEV is true.
+ */
+function shadowInspectorHtml(
+  token: SerializedToken,
+  normalized: Record<string, string>,
+): string {
+  function inspectRaw(raw: string | undefined): {
+    kind: string;
+    rawKeys: string[];
+    transitKeys: string[];
+    pretty: string;
+    normStr: string;
+  } {
+    const empty = {
+      kind: "empty", rawKeys: [] as string[], transitKeys: [] as string[],
+      pretty: "(empty)", normStr: "{}",
+    };
+    if (raw == null || raw === "") return empty;
+
+    // Step 1: raw JSON parse — shows wire shape ($meta$, $cnt$, $arr$, …)
+    let parsed: unknown = null;
+    try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
+    const rawKeys =
+      typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        ? Object.keys(parsed as object) : [];
+
+    // Step 2: transit-flatten — shows semantic keys (x, y, blur, …)
+    let transitObj: unknown = null;
+    try { transitObj = transitToPlain(parsed); } catch { /* keep null */ }
+    const transitKeys =
+      typeof transitObj === "object" && transitObj !== null && !Array.isArray(transitObj)
+        ? Object.keys(transitObj as object) : [];
+
+    let pretty: string;
+    try { pretty = JSON.stringify(parsed, null, 2) ?? raw; } catch { pretty = raw; }
+    if (pretty.length > 800) pretty = pretty.slice(0, 800) + "\n…(truncated)";
+
+    let normStr: string;
+    try { normStr = JSON.stringify(normalizeShadowValueToPreview(raw), null, 2); } catch { normStr = "(error)"; }
+
+    return {
+      kind: typeof parsed === "object" && parsed !== null ? "object" : "string",
+      rawKeys, transitKeys, pretty, normStr,
+    };
+  }
+
+  const vi = inspectRaw(token.value);
+  const ri = inspectRaw(token.resolvedValue);
+  // For token.value we already have the normalized result — reuse it.
+  const normForValue = JSON.stringify(normalized, null, 2);
+
+  const row = (k: string, v: string): string =>
+    `<div class="dtm-irow"><span class="dtm-ikey">${esc(k)}</span><code class="dtm-ival">${esc(v)}</code></div>`;
+
+  const section = (
+    title: string,
+    info: ReturnType<typeof inspectRaw>,
+    overrideNorm?: string,
+  ): string => `
+    <div class="dtm-isect">
+      <div class="dtm-isect-title">${esc(title)}</div>
+      ${row("kind", info.kind)}
+      ${row("raw keys", "[" + info.rawKeys.join(", ") + "]")}
+      ${row("transit keys", "[" + info.transitKeys.join(", ") + "]")}
+      <pre class="dtm-ipre">${esc(info.pretty)}</pre>
+      <div class="dtm-isect-title">→ normalizeShadowValueToPreview(…)</div>
+      <pre class="dtm-ipre">${esc(overrideNorm ?? info.normStr)}</pre>
+    </div>`;
+
+  return `
+    <details class="dtm-inspector">
+      <summary class="dtm-inspector-sum">&#128269; Inspect shadow payload</summary>
+      <div class="dtm-inspector-bd">
+        ${section("token.value", vi, normForValue)}
+        ${section("token.resolvedValue", ri)}
+      </div>
+    </details>`;
+}
+
 function buildEditValueSection(token: SerializedToken): string {
   if (token.type === "shadow") {
-    const v = parseCompositeToken(token.value);
-    return shadowFieldsHtml(v.x, v.y, v.blur, v.spread, v.color, v.type);
+    const normalized = normalizeShadowValueToPreview(token.value);
+
+    if (import.meta.env.DEV) {
+      console.debug("[DTM-B] shadow edit modal  name='" + token.name + "'",
+        "\n  raw token.value :", token.value,
+        "\n  normalized form :", normalized);
+    }
+
+    const inspectorEnabled = ((): boolean => {
+      try { return localStorage.getItem("dtm-inspector") !== "0"; } catch { return true; }
+    })();
+    const inspector = inspectorEnabled ? shadowInspectorHtml(token, normalized) : "";
+    return shadowFieldsHtml(
+      normalized.x, normalized.y, normalized.blur,
+      normalized.spread, normalized.color, normalized.type,
+    ) + inspector;
   }
   if (token.type === "typography") {
     const normalized = normalizeTypographyValueToForm(token.value);

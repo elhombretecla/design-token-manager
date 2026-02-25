@@ -751,6 +751,13 @@ html.col-resizing * {
   flex-shrink: 0;
 }
 
+/* Separator between X and Y values in the shadow composite preview */
+.cprop-sep {
+  opacity: 0.45;
+  padding: 0 1px;
+  pointer-events: none;
+}
+
 /* Empty state shown when a composite token has no parseable sub-values */
 .composite-empty {
   font-size: var(--font-size-s);
@@ -1550,6 +1557,17 @@ html.col-resizing * {
   font-size: var(--font-size-s);
   color: var(--foreground-secondary);
   text-align: center;
+}
+
+/* Hint shown at the bottom of a truncated catalog list */
+.fp-hint {
+  padding: 6px 12px;
+  font-size: var(--font-size-xs, 10px);
+  color: var(--foreground-secondary);
+  opacity: 0.7;
+  border-top: 1px solid var(--background-quaternary);
+  text-align: center;
+  pointer-events: none;
 }
 
 /* Font-picker chevron — positioned inside the input's visual boundary */
