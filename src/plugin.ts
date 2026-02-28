@@ -179,7 +179,19 @@ function serializeShadowValue(rawValue: unknown): string {
   if (rawValue == null)             return "";
   if (typeof rawValue === "string") return rawValue;
 
-  const obj = rawValue as Record<string, unknown>;
+  // New Penpot API: TokenShadow.value is TokenShadowValueString[] and
+  // resolvedValue is TokenShadowValue[].  Both are arrays — take the first
+  // element and serialize it as a plain object.
+  let src: unknown = rawValue;
+  if (Array.isArray(rawValue)) {
+    if (rawValue.length === 0) return "";
+    src = rawValue[0];
+    if (src === null) return "";
+    if (typeof src === "string") return src; // alias string stored in array
+    if (typeof src !== "object") return "";
+  }
+
+  const obj = src as Record<string, unknown>;
   const out: Record<string, unknown> = {};
 
   for (const [srcKey, outKey] of SHADOW_KEY_VARIANTS) {
@@ -190,6 +202,22 @@ function serializeShadowValue(rawValue: unknown): string {
     } catch {
       // Proxy getter threw; skip
     }
+  }
+
+  // New API uses `inset: boolean` (TokenShadowValue) or `inset: string`
+  // (TokenShadowValueString) instead of `type: "drop-shadow"/"inner-shadow"`.
+  // Convert to the canonical `type` key the UI normalizer expects, so
+  // normalizeShadowValueToPreview doesn't need changing.
+  if (!("type" in out)) {
+    try {
+      const inset = obj["inset"];
+      if (inset === true || inset === "true") {
+        out.type = "inner-shadow";
+      } else if (inset !== undefined && inset !== null) {
+        // false / "false" / any other value → drop-shadow (the default)
+        out.type = "drop-shadow";
+      }
+    } catch { /* proxy threw */ }
   }
 
   if (Object.keys(out).length > 0) {
@@ -314,6 +342,26 @@ function fontFamilyValueForApi(value: string): string | string[] {
   if (/^\{[^{}]+\}$/.test(s)) return s;
   // Plain name → wrap in array
   return s ? [s] : [""];
+}
+
+// Shadow tokens must be written as TokenShadowValueString[] (an array).
+// The UI always sends { type, x, y, blur, spread, color } — convert to
+// [{ inset, offsetX, offsetY, blur, spread, color }] before writing to Penpot.
+// Alias strings and values already in array form pass through unchanged.
+function shadowValueForApi(val: unknown): unknown {
+  if (typeof val === "string") return val;   // alias reference → pass through
+  if (Array.isArray(val))      return val;   // already array format → pass through
+  if (typeof val !== "object" || val === null) return val;
+
+  const obj = val as Record<string, unknown>;
+  return [{
+    inset:   obj.type === "inner-shadow",
+    offsetX: obj.x      ?? obj.offsetX ?? "0",
+    offsetY: obj.y      ?? obj.offsetY ?? "0",
+    blur:    obj.blur   ?? "0",
+    spread:  obj.spread ?? "0",
+    color:   obj.color  ?? "rgba(0,0,0,0.25)",
+  }];
 }
 
 // Within a typography token value, the `fontFamilies` field follows the same
@@ -587,15 +635,19 @@ penpot.ui.onMessage((message: unknown) => {
           type: msg.tokenType as string,
           name: msg.name as string,
           // fontFamilies schema: [:vector :text] — wrap plain names in an array.
-          // Typography: tryParseObject converts JSON string → plain object, then
-          //   normalizeTypographyFontFamilies wraps the fontFamilies field in an
-          //   array if it is a plain name (not an alias reference).
-          // Shadow / others: tryParseObject converts JSON string → plain object.
+          // Typography: tryParseObject + normalizeTypographyFontFamilies wraps
+          //   the fontFamilies field in an array for plain names.
+          // Shadow: tryParseObject + shadowValueForApi converts
+          //   { type, x, y, blur, spread, color } →
+          //   [{ inset, offsetX, offsetY, blur, spread, color }].
+          // Others: tryParseObject converts JSON string → plain object.
           value: (msg.tokenType as string) === "fontFamilies"
             ? fontFamilyValueForApi(msg.value as string)
             : (msg.tokenType as string) === "typography"
               ? normalizeTypographyFontFamilies(tryParseObject(msg.value as string)) as string | object
-              : tryParseObject(msg.value as string),
+              : (msg.tokenType as string) === "shadow"
+                ? shadowValueForApi(tryParseObject(msg.value as string)) as string | object
+                : tryParseObject(msg.value as string),
           description: msg.description as string ?? "",
         });
         // Defer broadcast by one tick — same reason as duplicate-token:
@@ -618,15 +670,19 @@ penpot.ui.onMessage((message: unknown) => {
         if (!token) throw new Error(`Token not found: ${msg.tokenId}`);
 
         // fontFamilies schema: [:vector :text] — wrap plain names in an array.
-        // Typography: tryParseObject converts JSON string → plain object, then
-        //   normalizeTypographyFontFamilies wraps the fontFamilies field in an
-        //   array if it is a plain name (not an alias reference).
-        // Shadow / others: tryParseObject converts JSON string → plain object.
+        // Typography: tryParseObject + normalizeTypographyFontFamilies wraps
+        //   the fontFamilies field in an array for plain names.
+        // Shadow: tryParseObject + shadowValueForApi converts
+        //   { type, x, y, blur, spread, color } →
+        //   [{ inset, offsetX, offsetY, blur, spread, color }].
+        // Others: tryParseObject converts JSON string → plain object.
         const parsedValue = token.type === "fontFamilies"
           ? fontFamilyValueForApi(msg.value as string)
           : token.type === "typography"
             ? normalizeTypographyFontFamilies(tryParseObject(msg.value as string))
-            : tryParseObject(msg.value as string);
+            : token.type === "shadow"
+              ? shadowValueForApi(tryParseObject(msg.value as string))
+              : tryParseObject(msg.value as string);
 
         if (typeof token.update === "function") {
           token.update({
