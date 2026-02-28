@@ -22,9 +22,15 @@ interface IToken {
   readonly id: string;
   name: string;
   readonly type: string;
-  value: string;        // Can be a string or a serialised object
+  value: string;        // Can be a string, a plain object, or a string[]
   description: string;
-  readonly resolvedValue?: string | object;
+  // resolvedValue: plain string, string[] (fontFamilies), object, or object[]
+  // (TokenTypographyValue[] / TokenShadowValue) depending on token type and
+  // Penpot version.  Always access through the serializer helpers below.
+  readonly resolvedValue?: string | string[] | object | object[];
+  // Introduced in newer Penpot builds: the resolved value already coerced to a
+  // single string, ready to display.  Undefined when no active set resolves it.
+  readonly resolvedValueString?: string;
   remove(): void;
   // `update` may not exist in all Penpot versions; always check before calling
   update?(args: { name?: string; value?: string; description?: string }): void;
@@ -195,6 +201,49 @@ function serializeShadowValue(rawValue: unknown): string {
   try { return JSON.stringify(rawValue) ?? ""; } catch { return ""; }
 }
 
+// ── fontFamilies serializer ────────────────────────────────────────────────
+// fontFamilies value is now string | string[] in the Penpot API (clean JS
+// values, no longer a CLJS proxy trie).  We join arrays with ", " so the UI
+// always receives a plain, displayable string.
+function serializeFontFamilyValue(raw: unknown): string {
+  if (raw == null) return "";
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw)) {
+    const strs = (raw as unknown[]).filter(
+      (s): s is string => typeof s === "string" && Boolean(s)
+    );
+    return strs.join(", ");
+  }
+  return valueToString(raw);
+}
+
+// ── typography resolvedValue serializer ────────────────────────────────────
+// resolvedValue for typography tokens is now TokenTypographyValue[] — an array
+// of plain JS objects with clean JS types (numbers, string[]).  We serialise
+// the first element as a JSON string so normalizeTypographyValueToForm() in
+// the UI can parse it like any other typography value.
+//
+// Fallback: the old proxy-safe serializeTypographyValue() is still called for
+// older Penpot builds that may still return a CLJS proxy object.
+function serializeTypographyResolvedValue(raw: unknown): string {
+  if (raw == null) return "";
+  if (typeof raw === "string") return raw;
+
+  if (Array.isArray(raw) && raw.length > 0) {
+    const first = raw[0];
+    if (typeof first === "string") return first;
+    if (typeof first === "object" && first !== null) {
+      try {
+        const str = JSON.stringify(first);
+        if (str && str !== "{}") return str;
+      } catch { /* fall through to proxy-safe path */ }
+    }
+  }
+
+  // Fallback: proxy-safe serialiser handles older CLJS proxy objects.
+  return serializeTypographyValue(raw);
+}
+
 // Composite token types (typography, shadow) must be passed to addToken as
 // plain objects, not JSON strings.  If Penpot receives a string that starts
 // with "{" it treats the whole thing as an alias reference (like
@@ -228,26 +277,43 @@ function serializeToken(token: IToken) {
   // proxy getter to throw internally.  We treat any error as "not resolved".
   let resolvedValue: string | undefined;
   try {
-    resolvedValue = token.resolvedValue != null
-      ? (token.type === "typography"
-          ? serializeTypographyValue(token.resolvedValue)
-          : token.type === "shadow"
-            ? serializeShadowValue(token.resolvedValue)
-            : valueToString(token.resolvedValue))
-      : undefined;
+    if (token.resolvedValue != null) {
+      let rv: string;
+      if (token.type === "typography") {
+        // resolvedValue is now TokenTypographyValue[] (plain JS array of objects)
+        // in current Penpot builds.  serializeTypographyResolvedValue handles
+        // both the new array format and the old CLJS proxy fallback.
+        rv = serializeTypographyResolvedValue(token.resolvedValue);
+      } else if (token.type === "shadow") {
+        rv = serializeShadowValue(token.resolvedValue);
+      } else if (token.type === "fontFamilies") {
+        // resolvedValueString is the new API field — already a clean string.
+        // Fall back to serializeFontFamilyValue for older Penpot builds that
+        // only expose resolvedValue (string[] or CLJS proxy).
+        const rvs = token.resolvedValueString;
+        rv = (rvs && rvs.trim()) ? rvs : serializeFontFamilyValue(token.resolvedValue);
+      } else {
+        rv = valueToString(token.resolvedValue);
+      }
+      resolvedValue = rv || undefined;
+    }
   } catch {
     resolvedValue = undefined;
   }
 
-  // Use proxy-safe serializers for composite token types (typography, shadow)
-  // so we always emit real JSON instead of "{}" when Penpot's ClojureScript
-  // proxy doesn't expose enumerable properties.
+  // Use type-specific serializers so the UI always receives a displayable string.
+  //   • typography  — proxy-safe key-probing (CLJS proxy compat) + new object compat
+  //   • shadow      — proxy-safe key-probing
+  //   • fontFamilies— joins string[] arrays; returns alias strings unchanged
+  //   • everything else — generic valueToString
   const value =
     token.type === "typography"
       ? serializeTypographyValue(token.value)
       : token.type === "shadow"
         ? serializeShadowValue(token.value)
-        : valueToString(token.value);
+        : token.type === "fontFamilies"
+          ? serializeFontFamilyValue(token.value)
+          : valueToString(token.value);
 
   // ── Debug log A ─────────────────────────────────────────────────────────
   // import.meta.env.DEV is replaced at build time by Vite → true in `npm run
@@ -271,6 +337,19 @@ function serializeToken(token: IToken) {
           + "  typeof value=" + typeof token.value
           + "  serialised=" + value,
         "\n  raw value:", token.value,
+      );
+    } catch { /* never block serialization */ }
+  }
+  if (import.meta.env.DEV && token.type === "fontFamilies") {
+    try {
+      console.debug(
+        "[DTM-A] fontFamilies serialised  name='" + token.name + "'"
+          + "  typeof value=" + typeof token.value
+          + "  serialised=" + value
+          + "  resolvedValueString=" + token.resolvedValueString
+          + "  resolvedValue(serialised)=" + resolvedValue,
+        "\n  raw value:", token.value,
+        "\n  raw resolvedValue:", token.resolvedValue,
       );
     } catch { /* never block serialization */ }
   }

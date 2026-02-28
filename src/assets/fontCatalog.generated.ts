@@ -1,6 +1,6 @@
 // AUTO-GENERATED — do not edit manually.
 // Run `node scripts/generate-font-catalog.mjs` (or `npm run generate-fonts`) to regenerate.
-// Source: gfonts.json (1910 fonts, 2026-02-25)
+// Source: gfonts.json (1910 fonts, 2026-02-28)
 
 export interface FontCatalogItem {
   family: string;

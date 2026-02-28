@@ -108,12 +108,15 @@ export function normalizeTypographyValueToForm(raw: string): Record<string, stri
   // These are plain strings, alias refs ("{…}"), or numbers.  Try kebab-case
   // keys first (Penpot internal), then API camelCase / plural variants.
   const simpleFields: Array<[keys: string[], formKey: string]> = [
-    [["font-size",       "fontSizes",    "fontSize"],    "fontSize"],
-    [["font-weight",     "fontWeight"],                  "fontWeight"],
-    [["line-height",     "lineHeight"],                  "lineHeight"],
-    [["letter-spacing",  "letterSpacing"],               "letterSpacing"],
-    [["text-case",       "textCase"],                    "textCase"],
-    [["text-decoration", "textDecoration"],              "textDecoration"],
+    [["font-size",       "fontSizes",    "fontSize"],              "fontSize"],
+    // fontWeights (plural) is used by TokenTypographyValue (resolvedValue);
+    // fontWeight (singular) is used by TokenTypographyValueString (value).
+    // Probe both so the form populates correctly for either source.
+    [["font-weight",     "fontWeights",  "fontWeight"],            "fontWeight"],
+    [["line-height",     "lineHeight"],                            "lineHeight"],
+    [["letter-spacing",  "letterSpacing"],                         "letterSpacing"],
+    [["text-case",       "textCase"],                              "textCase"],
+    [["text-decoration", "textDecoration"],                        "textDecoration"],
   ];
 
   for (const [keys, formKey] of simpleFields) {
