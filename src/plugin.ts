@@ -316,6 +316,25 @@ function fontFamilyValueForApi(value: string): string | string[] {
   return s ? [s] : [""];
 }
 
+// Within a typography token value, the `fontFamilies` field follows the same
+// Penpot Malli schema as a standalone fontFamilies token:
+//   • string  → alias reference (e.g. "{font.primary}")
+//   • string[] → literal font names (e.g. ["DM Sans"])
+//
+// The UI serialises fontFamilies as a plain string ("DM Sans"), so we must
+// wrap it in an array before writing to Penpot.  Without this, Penpot treats
+// "DM Sans" as an unresolvable alias and the font doesn't apply to shapes.
+function normalizeTypographyFontFamilies(val: unknown): unknown {
+  if (typeof val !== "object" || val === null) return val;
+  const obj = val as Record<string, unknown>;
+  const ff = obj.fontFamilies;
+  // Alias reference → leave as string; Penpot resolves it via the token graph.
+  if (typeof ff === "string" && ff.trim() && !/^\{[^{}]+\}$/.test(ff.trim())) {
+    return { ...obj, fontFamilies: [ff] };
+  }
+  return obj;
+}
+
 // Composite token types (typography, shadow) must be passed to addToken as
 // plain objects, not JSON strings.  If Penpot receives a string that starts
 // with "{" it treats the whole thing as an alias reference (like
@@ -568,10 +587,15 @@ penpot.ui.onMessage((message: unknown) => {
           type: msg.tokenType as string,
           name: msg.name as string,
           // fontFamilies schema: [:vector :text] — wrap plain names in an array.
-          // Typography/shadow: tryParseObject converts JSON string → plain object.
+          // Typography: tryParseObject converts JSON string → plain object, then
+          //   normalizeTypographyFontFamilies wraps the fontFamilies field in an
+          //   array if it is a plain name (not an alias reference).
+          // Shadow / others: tryParseObject converts JSON string → plain object.
           value: (msg.tokenType as string) === "fontFamilies"
             ? fontFamilyValueForApi(msg.value as string)
-            : tryParseObject(msg.value as string),
+            : (msg.tokenType as string) === "typography"
+              ? normalizeTypographyFontFamilies(tryParseObject(msg.value as string)) as string | object
+              : tryParseObject(msg.value as string),
           description: msg.description as string ?? "",
         });
         // Defer broadcast by one tick — same reason as duplicate-token:
@@ -594,10 +618,15 @@ penpot.ui.onMessage((message: unknown) => {
         if (!token) throw new Error(`Token not found: ${msg.tokenId}`);
 
         // fontFamilies schema: [:vector :text] — wrap plain names in an array.
-        // Typography/shadow: tryParseObject converts JSON string → plain object.
+        // Typography: tryParseObject converts JSON string → plain object, then
+        //   normalizeTypographyFontFamilies wraps the fontFamilies field in an
+        //   array if it is a plain name (not an alias reference).
+        // Shadow / others: tryParseObject converts JSON string → plain object.
         const parsedValue = token.type === "fontFamilies"
           ? fontFamilyValueForApi(msg.value as string)
-          : tryParseObject(msg.value as string);
+          : token.type === "typography"
+            ? normalizeTypographyFontFamilies(tryParseObject(msg.value as string))
+            : tryParseObject(msg.value as string);
 
         if (typeof token.update === "function") {
           token.update({
@@ -606,9 +635,19 @@ penpot.ui.onMessage((message: unknown) => {
             description: msg.description as string,
           });
         } else {
-          // Fallback: mutate properties directly
-          token.name = msg.name as string;
-          token.value = parsedValue as string;
+          // Fallback: mutate properties directly.
+          //
+          // For fontFamilies tokens the proxy's `name` setter re-validates the
+          // token against Penpot's internal schema even when the name is
+          // unchanged, triggering a :malli.core/invalid-type error.  Skip the
+          // assignment when the name hasn't actually changed.
+          if ((msg.name as string) !== token.name) {
+            token.name = msg.name as string;
+          }
+          // Pass parsedValue without forcing a string cast: for fontFamilies
+          // it may be string[] (array) and the proxy setter accepts both forms.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (token as any).value = parsedValue;
           token.description = msg.description as string;
         }
 
