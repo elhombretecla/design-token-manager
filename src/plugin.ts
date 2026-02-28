@@ -202,18 +202,77 @@ function serializeShadowValue(rawValue: unknown): string {
 }
 
 // ── fontFamilies serializer ────────────────────────────────────────────────
-// fontFamilies value is now string | string[] in the Penpot API (clean JS
-// values, no longer a CLJS proxy trie).  We join arrays with ", " so the UI
-// always receives a plain, displayable string.
+//
+// fontFamilies tokens store their value as a CLJS PersistentVector — the same
+// trie structure used for typography's fontFamily field.  The full shape is:
+//
+//   outer PersistentVector { $cnt$:1, $tail$: [inner_vec] }
+//   inner PersistentVector { $cnt$:2, $tail$: ["DM", "Sans"] }
+//
+// The outer vector holds one or more font families; each inner vector holds
+// the words of one family name.  We traverse $tail$ recursively, join the
+// leaf strings of each inner vector with spaces ("DM"+"Sans" → "DM Sans"),
+// and join multiple families with ", ".
+//
+// Also handles clean JS forms the API may return:
+//   • plain string "Inter"          → returned as-is (alias refs included)
+//   • flat string[] ["DM Sans"]     → joined with ", "
+//   • nested string[][] [["DM","Sans"]] → inner words joined with " "
+
+// Collect all leaf strings from a CLJS PersistentVector by following $tail$
+// recursively. Leaf strings are joined with spaces to reconstruct a multi-word
+// font family name: {$tail$:["DM","Sans"]} → "DM Sans".
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function cljsExtractWords(val: unknown, depth = 0): string {
+  if (depth > 8 || val === null || val === undefined) return "";
+  if (typeof val === "string") return val.trim();
+  if (Array.isArray(val)) {
+    return (val as unknown[])
+      .map((item) => cljsExtractWords(item, depth + 1))
+      .filter(Boolean)
+      .join(" ");
+  }
+  if (typeof val === "object") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tail = (val as any)["$tail$"];
+    if (tail !== undefined) return cljsExtractWords(tail, depth + 1);
+  }
+  return "";
+}
+
 function serializeFontFamilyValue(raw: unknown): string {
   if (raw == null) return "";
+  // Plain string: alias "{font.primary}" or direct name "Inter" — return as-is.
   if (typeof raw === "string") return raw;
+
   if (Array.isArray(raw)) {
-    const strs = (raw as unknown[]).filter(
-      (s): s is string => typeof s === "string" && Boolean(s)
-    );
-    return strs.join(", ");
+    const families: string[] = [];
+    for (const item of raw as unknown[]) {
+      if (typeof item === "string" && item) {
+        families.push(item);
+      } else if (Array.isArray(item)) {
+        // Plain JS word-vector from new API: ["DM", "Sans"] → "DM Sans"
+        const words = (item as unknown[]).filter(
+          (w): w is string => typeof w === "string" && Boolean(w)
+        );
+        if (words.length > 0) families.push(words.join(" "));
+      } else if (item !== null && typeof item === "object") {
+        // CLJS inner PersistentVector — collect leaf words, join with space
+        const name = cljsExtractWords(item);
+        if (name) families.push(name);
+      }
+    }
+    if (families.length > 0) return families.join(", ");
   }
+
+  // CLJS outer PersistentVector: follow $tail$ to the actual element list,
+  // then re-enter serializeFontFamilyValue with that list.
+  if (typeof raw === "object" && raw !== null) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tail = (raw as any)["$tail$"];
+    if (tail !== undefined) return serializeFontFamilyValue(tail);
+  }
+
   return valueToString(raw);
 }
 
@@ -242,6 +301,19 @@ function serializeTypographyResolvedValue(raw: unknown): string {
 
   // Fallback: proxy-safe serialiser handles older CLJS proxy objects.
   return serializeTypographyValue(raw);
+}
+
+// fontFamilies tokens require the value as a JS array per Penpot's Malli schema:
+//   [:or [:vector :app.common.schema/text]  alias-ref-re]
+// A plain string like "DM Sans" triggers :malli.core/invalid-type.
+// Alias references ("{token.path}") are kept as strings; everything else is
+// wrapped in a single-element array so Penpot receives ["DM Sans"].
+function fontFamilyValueForApi(value: string): string | string[] {
+  const s = (value ?? "").trim();
+  // Alias reference: {font.primary} → keep as string, Penpot resolves it
+  if (/^\{[^{}]+\}$/.test(s)) return s;
+  // Plain name → wrap in array
+  return s ? [s] : [""];
 }
 
 // Composite token types (typography, shadow) must be passed to addToken as
@@ -287,11 +359,11 @@ function serializeToken(token: IToken) {
       } else if (token.type === "shadow") {
         rv = serializeShadowValue(token.resolvedValue);
       } else if (token.type === "fontFamilies") {
-        // resolvedValueString is the new API field — already a clean string.
-        // Fall back to serializeFontFamilyValue for older Penpot builds that
-        // only expose resolvedValue (string[] or CLJS proxy).
-        const rvs = token.resolvedValueString;
-        rv = (rvs && rvs.trim()) ? rvs : serializeFontFamilyValue(token.resolvedValue);
+        // Do NOT use resolvedValueString — it contains the raw CLJS pr-str
+        // representation (EDN format, e.g. [["DM" "Sans"]] with spaces, not
+        // commas), which is not human-readable.  Always use serializeFontFamilyValue
+        // which handles plain strings, flat string[], and nested word-vectors.
+        rv = serializeFontFamilyValue(token.resolvedValue);
       } else {
         rv = valueToString(token.resolvedValue);
       }
@@ -346,7 +418,6 @@ function serializeToken(token: IToken) {
         "[DTM-A] fontFamilies serialised  name='" + token.name + "'"
           + "  typeof value=" + typeof token.value
           + "  serialised=" + value
-          + "  resolvedValueString=" + token.resolvedValueString
           + "  resolvedValue(serialised)=" + resolvedValue,
         "\n  raw value:", token.value,
         "\n  raw resolvedValue:", token.resolvedValue,
@@ -496,10 +567,11 @@ penpot.ui.onMessage((message: unknown) => {
         set.addToken({
           type: msg.tokenType as string,
           name: msg.name as string,
-          // tryParseObject converts a JSON string like {"fontFamily":"Inter",...}
-          // into a real object.  Penpot must receive an object for composite
-          // types; a raw JSON string is misread as an alias reference.
-          value: tryParseObject(msg.value as string),
+          // fontFamilies schema: [:vector :text] — wrap plain names in an array.
+          // Typography/shadow: tryParseObject converts JSON string → plain object.
+          value: (msg.tokenType as string) === "fontFamilies"
+            ? fontFamilyValueForApi(msg.value as string)
+            : tryParseObject(msg.value as string),
           description: msg.description as string ?? "",
         });
         // Defer broadcast by one tick — same reason as duplicate-token:
@@ -521,10 +593,11 @@ penpot.ui.onMessage((message: unknown) => {
         const token = set.tokens.find((t) => t.id === (msg.tokenId as string));
         if (!token) throw new Error(`Token not found: ${msg.tokenId}`);
 
-        // For composite types (typography, shadow) the value arrives as a JSON
-        // string from the UI.  Penpot needs a plain object, not a string that
-        // happens to look like JSON.  tryParseObject handles the conversion.
-        const parsedValue = tryParseObject(msg.value as string);
+        // fontFamilies schema: [:vector :text] — wrap plain names in an array.
+        // Typography/shadow: tryParseObject converts JSON string → plain object.
+        const parsedValue = token.type === "fontFamilies"
+          ? fontFamilyValueForApi(msg.value as string)
+          : tryParseObject(msg.value as string);
 
         if (typeof token.update === "function") {
           token.update({
