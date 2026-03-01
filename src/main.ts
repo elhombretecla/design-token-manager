@@ -909,8 +909,10 @@ function compositeShadowPreviewHtml(vals: Record<string, string>, tokenId?: stri
       );
     } else {
       parts.push(
-        `<span class="color-swatch" style="background:${esc(vals.color)}" title="${esc(vals.color)}" aria-hidden="true"></span>` +
-        `<span class="cprop-val" title="${esc(vals.color)}">${esc(vals.color)}</span>`
+        `<span class="cprop" title="Color: ${esc(vals.color)}">` +
+        `<span class="color-swatch" style="background:${esc(vals.color)}" aria-hidden="true"></span>` +
+        `<span class="cprop-val">${esc(vals.color)}</span>` +
+        `</span>`
       );
     }
   }
