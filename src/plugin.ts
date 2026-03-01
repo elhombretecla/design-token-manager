@@ -113,6 +113,10 @@ const TYPO_KEY_VARIANTS: ReadonlyArray<readonly [string, string]> = [
   ["fontSizes",      "fontSizes"],
   ["fontSize",       "fontSizes"],
   ["font-size",      "fontSizes"],
+  // TokenTypographyValue (resolvedValue) uses "fontWeights" (plural);
+  // TokenTypographyValueString (value) uses "fontWeight" (singular).
+  // Probe plural first so resolved values are captured correctly.
+  ["fontWeights",    "fontWeight"],
   ["fontWeight",     "fontWeight"],
   ["font-weight",    "fontWeight"],
   ["lineHeight",     "lineHeight"],
@@ -178,6 +182,16 @@ const SHADOW_KEY_VARIANTS: ReadonlyArray<readonly [string, string]> = [
 function serializeShadowValue(rawValue: unknown): string {
   if (rawValue == null)             return "";
   if (typeof rawValue === "string") return rawValue;
+
+  // CLJS PersistentVector: when resolvedValue is still a CLJS proxy (not yet
+  // a clean JS array) Penpot wraps it in a PersistentVector whose elements
+  // live under the $tail$ key.  Array.isArray returns false for these proxies,
+  // so we must unwrap $tail$ first before attempting the array-element path.
+  if (!Array.isArray(rawValue) && typeof rawValue === "object" && rawValue !== null) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tail = (rawValue as any)["$tail$"];
+    if (Array.isArray(tail)) return serializeShadowValue(tail);
+  }
 
   // New Penpot API: TokenShadow.value is TokenShadowValueString[] and
   // resolvedValue is TokenShadowValue[].  Both are arrays — take the first
@@ -305,17 +319,26 @@ function serializeFontFamilyValue(raw: unknown): string {
 }
 
 // ── typography resolvedValue serializer ────────────────────────────────────
-// resolvedValue for typography tokens is now TokenTypographyValue[] — an array
-// of plain JS objects with clean JS types (numbers, string[]).  We serialise
-// the first element as a JSON string so normalizeTypographyValueToForm() in
-// the UI can parse it like any other typography value.
+// resolvedValue for typography tokens is TokenTypographyValue[] — a plain JS
+// array of objects (docs: https://doc.plugins.penpot.dev/interfaces/TokenTypographyValue.html).
 //
-// Fallback: the old proxy-safe serializeTypographyValue() is still called for
-// older Penpot builds that may still return a CLJS proxy object.
+// TokenTypographyValue fields:
+//   fontFamilies:  string[]   ← NOTE: may be null/missing in practice
+//   fontSizes:     number
+//   fontWeights:   string     ← plural (different from TokenTypographyValueString.fontWeight)
+//   lineHeight:    number
+//   letterSpacing: number
+//   textCase:      string
+//   textDecoration:string
+//
+// We serialize the first element directly with JSON.stringify.
+// fontFamilies is often null/missing in the Penpot-resolved object even when
+// the stored value has it — the UI compensates by supplementing from token.value.
 function serializeTypographyResolvedValue(raw: unknown): string {
   if (raw == null) return "";
   if (typeof raw === "string") return raw;
 
+  // resolvedValue is TokenTypographyValue[] — take the first element.
   if (Array.isArray(raw) && raw.length > 0) {
     const first = raw[0];
     if (typeof first === "string") return first;
@@ -323,11 +346,11 @@ function serializeTypographyResolvedValue(raw: unknown): string {
       try {
         const str = JSON.stringify(first);
         if (str && str !== "{}") return str;
-      } catch { /* fall through to proxy-safe path */ }
+      } catch { /* fall through */ }
     }
   }
 
-  // Fallback: proxy-safe serialiser handles older CLJS proxy objects.
+  // Fallback: proxy-safe key-probing for older CLJS proxy formats.
   return serializeTypographyValue(raw);
 }
 
@@ -434,7 +457,9 @@ function serializeToken(token: IToken) {
       } else {
         rv = valueToString(token.resolvedValue);
       }
-      resolvedValue = rv || undefined;
+      // Treat "{}" as unresolved: an empty JSON object is what JSON.stringify
+      // produces for an opaque CLJS proxy, not a real resolved value.
+      resolvedValue = (rv && rv !== "{}") ? rv : undefined;
     }
   } catch {
     resolvedValue = undefined;

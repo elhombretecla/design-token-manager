@@ -909,7 +909,8 @@ function compositeShadowPreviewHtml(vals: Record<string, string>, tokenId?: stri
       );
     } else {
       parts.push(
-        `<span class="color-swatch" style="background:${esc(vals.color)}" title="${esc(vals.color)}" aria-hidden="true"></span>`
+        `<span class="color-swatch" style="background:${esc(vals.color)}" title="${esc(vals.color)}" aria-hidden="true"></span>` +
+        `<span class="cprop-val" title="${esc(vals.color)}">${esc(vals.color)}</span>`
       );
     }
   }
@@ -950,7 +951,14 @@ function compositeShadowPreviewHtml(vals: Record<string, string>, tokenId?: stri
 function resolvedValueCellHtml(token: SerializedToken): string {
   const raw = token.resolvedValue ?? token.value;
   if (token.type === "typography") {
-    return compositeTypographyPreviewHtml(normalizeTypographyValueToForm(raw));
+    const form = normalizeTypographyValueToForm(raw);
+    // Penpot's resolvedValue omits fontFamilies even when the stored value has
+    // one.  Supplement from the stored value so the resolved preview is complete.
+    if (!form.fontFamily && token.resolvedValue) {
+      const valueForm = normalizeTypographyValueToForm(token.value);
+      if (valueForm.fontFamily) form.fontFamily = valueForm.fontFamily;
+    }
+    return compositeTypographyPreviewHtml(form);
   }
   if (token.type === "shadow") {
     return compositeShadowPreviewHtml(normalizeShadowValueToPreview(raw));
