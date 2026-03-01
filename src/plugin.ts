@@ -303,26 +303,34 @@ function serializeFontFamilyValue(raw: unknown): string {
 }
 
 // ── typography resolvedValue serializer ────────────────────────────────────
-// resolvedValue for typography tokens is TokenTypographyValue[] — a plain JS
-// array of objects (docs: https://doc.plugins.penpot.dev/interfaces/TokenTypographyValue.html).
+// resolvedValue for typography tokens is documented as TokenTypographyValue[]
+// (plain JS array), but current Penpot builds deliver it as a CLJS
+// PersistentVector — the same trie structure seen for shadow tokens:
 //
-// TokenTypographyValue fields:
-//   fontFamilies:  string[]   ← NOTE: may be null/missing in practice
-//   fontSizes:     number
-//   fontWeights:   string     ← plural (different from TokenTypographyValueString.fontWeight)
+//   { $cnt$: 1, $tail$: [<inner CLJS proxy>], ... }
+//
+// The inner element at $tail$[0] holds the resolved typography data.  Its
+// properties (fontSizes, fontWeights, lineHeight…) are accessible via the CLJS
+// proxy getter but NOT JS-enumerable, so JSON.stringify returns "{}".
+//
+// TokenTypographyValue fields (resolved):
+//   fontFamilies:  string[]   ← always null/missing in practice (Penpot bug)
+//   fontSizes:     number     ← resolved alias or direct number
+//   fontWeights:   string     ← plural; different from stored fontWeight
 //   lineHeight:    number
 //   letterSpacing: number
 //   textCase:      string
 //   textDecoration:string
 //
-// We serialize the first element directly with JSON.stringify.
-// fontFamilies is often null/missing in the Penpot-resolved object even when
-// the stored value has it — the UI compensates by supplementing from token.value.
+// Strategy (mirrors serializeShadowResolvedValue):
+//   1. Plain JS array  → JSON.stringify(first) directly (future-proof).
+//   2. CLJS PV object  → traverse $tail$ → key-probe inner with serializeTypographyValue.
+//   3. Fallback        → key-probe the raw value itself.
 function serializeTypographyResolvedValue(raw: unknown): string {
   if (raw == null) return "";
   if (typeof raw === "string") return raw;
 
-  // resolvedValue is TokenTypographyValue[] — take the first element.
+  // 1. Plain JS array: TokenTypographyValue[] in newer Penpot builds.
   if (Array.isArray(raw) && raw.length > 0) {
     const first = raw[0];
     if (typeof first === "string") return first;
@@ -334,7 +342,27 @@ function serializeTypographyResolvedValue(raw: unknown): string {
     }
   }
 
-  // Fallback: proxy-safe key-probing for older CLJS proxy formats.
+  // 2. CLJS PersistentVector: try $tail$[0] first.
+  //    The inner element is a CLJS proxy — not JS-enumerable, but its fields
+  //    may be readable via direct key access.  If $tail$[0] yields nothing
+  //    useful ("{}"), fall through to step 3.
+  if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tail = (raw as any)["$tail$"];
+    if (Array.isArray(tail) && tail.length > 0) {
+      const inner = tail[0];
+      if (inner !== null && typeof inner === "object") {
+        const rv = serializeTypographyValue(inner);
+        if (rv && rv !== "{}") return rv;
+        // inner proxy was empty — fall through to step 3
+      }
+    }
+  }
+
+  // 3. Key-probe the outer CLJS PV directly.
+  //    Penpot's typography resolvedValue proxy forwards field access
+  //    (fontSizes, fontWeights…) to the resolved inner map, so probing the
+  //    outer PV object itself yields the resolved values.
   return serializeTypographyValue(raw);
 }
 
@@ -371,22 +399,25 @@ function serializeShadowResolvedValue(raw: unknown): string {
     }
   }
 
-  // 2. CLJS PersistentVector: actual shadow data lives in $tail$[0].
+  // 2. CLJS PersistentVector: try $tail$[0] first.
   //    The inner element is a CLJS proxy — not enumerable via JSON.stringify,
-  //    but its fields (inset, offsetX, color…) are readable by direct key access.
-  //    Pass it to serializeShadowValue which does exactly that key-probing.
+  //    but its fields (inset, offsetX, color…) may be readable by direct key
+  //    access.  If $tail$[0] yields nothing useful ("{}"), fall through to
+  //    step 3 so the outer PV can be tried.
   if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const tail = (raw as any)["$tail$"];
     if (Array.isArray(tail) && tail.length > 0) {
       const inner = tail[0];
       if (inner !== null && typeof inner === "object") {
-        return serializeShadowValue(inner);
+        const rv = serializeShadowValue(inner);
+        if (rv && rv !== "{}") return rv;
+        // inner proxy was empty — fall through to step 3
       }
     }
   }
 
-  // 3. Final fallback: key-probing on the raw value itself.
+  // 3. Key-probe the outer CLJS PV directly.
   return serializeShadowValue(raw);
 }
 

@@ -954,35 +954,41 @@ function resolvedValueCellHtml(token: SerializedToken): string {
   const raw = token.resolvedValue ?? token.value;
   if (token.type === "typography") {
     const form = normalizeTypographyValueToForm(raw);
-    // Penpot's resolvedValue may omit fields that are set via alias references
-    // (fontFamilies is always null; aliased fontSizes / fontWeight etc. may also
-    // be missing).  Supplement any missing fields from the stored value so the
-    // resolved preview stays complete.
+    // Supplement fields that Penpot omits from the resolved value (fontFamilies
+    // is always null; other fields may be missing if the CLJS proxy was empty).
+    // Only copy PLAIN (non-alias) values from the stored form.
     if (token.resolvedValue) {
       const valueForm = normalizeTypographyValueToForm(token.value);
       for (const key of [
         "fontFamily", "fontSize", "fontWeight",
         "lineHeight", "letterSpacing", "textCase", "textDecoration",
       ]) {
-        if (!form[key] && valueForm[key]) form[key] = valueForm[key];
+        if (!form[key] && valueForm[key] && !isAlias(valueForm[key])) {
+          form[key] = valueForm[key];
+        }
       }
+    }
+    // Strip any alias values that ended up in the resolved form — the resolved
+    // column must never show alias references, only plain resolved values.
+    for (const key of Object.keys(form)) {
+      if (isAlias(form[key])) delete form[key];
     }
     return compositeTypographyPreviewHtml(form);
   }
   if (token.type === "shadow") {
     const form = normalizeShadowValueToPreview(raw);
+    // Supplement missing shadow fields with plain (non-alias) values from stored.
     if (token.resolvedValue) {
-      if (Object.keys(form).length === 0) {
-        // Resolved value existed but produced no usable data (e.g. CLJS proxy
-        // serialisation failed entirely). Fall back to the stored value form so
-        // the preview renders rather than showing .composite-empty.
-        return compositeShadowPreviewHtml(normalizeShadowValueToPreview(token.value));
+      const valueForm = normalizeShadowValueToPreview(token.value);
+      for (const key of ["x", "y", "blur", "spread", "color", "type"]) {
+        if (!form[key] && valueForm[key] && !isAlias(valueForm[key])) {
+          form[key] = valueForm[key];
+        }
       }
-      // Supplement type if still missing (inset:boolean not yet converted).
-      if (!form.type) {
-        const valueForm = normalizeShadowValueToPreview(token.value);
-        if (valueForm.type) form.type = valueForm.type;
-      }
+    }
+    // Strip any alias values from the resolved form.
+    for (const key of Object.keys(form)) {
+      if (isAlias(form[key])) delete form[key];
     }
     return compositeShadowPreviewHtml(form);
   }
@@ -2215,42 +2221,41 @@ function typographyFieldsHtml(vals: Record<string, string> = {}): string {
       </div>
       <div class="form-field">
         <label class="form-label" for="typo-text-case">Text Case</label>
-        <div class="value-input-wrapper">
-          <input type="text" class="input form-input" id="typo-text-case" list="typo-text-case-list"
-                 value="${v("textCase")}" placeholder="none" autocomplete="off" />
-          <datalist id="typo-text-case-list">
-            <option value="none"></option>
-            <option value="uppercase"></option>
-            <option value="lowercase"></option>
-            <option value="capitalize"></option>
-          </datalist>
-          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
-                  title="Insert alias reference"
-                  data-token-type="textCase" data-target-input="typo-text-case">${VALUE_ALIAS_INSERT_ICON}</button>
-        </div>
+        <select class="select" id="typo-text-case">
+          ${SELECT_OPTIONS.textCase.map((o) => `<option value="${o}"${o === v("textCase") ? " selected" : ""}>${o}</option>`).join("")}
+        </select>
       </div>
       <div class="form-field" style="grid-column: 1/-1">
         <label class="form-label" for="typo-text-decoration">Text Decoration</label>
-        <div class="value-input-wrapper">
-          <input type="text" class="input form-input" id="typo-text-decoration" list="typo-text-decoration-list"
-                 value="${v("textDecoration")}" placeholder="none" autocomplete="off" />
-          <datalist id="typo-text-decoration-list">
-            <option value="none"></option>
-            <option value="underline"></option>
-            <option value="line-through"></option>
-          </datalist>
-          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
-                  title="Insert alias reference"
-                  data-token-type="textDecoration" data-target-input="typo-text-decoration">${VALUE_ALIAS_INSERT_ICON}</button>
-        </div>
+        <select class="select" id="typo-text-decoration">
+          ${SELECT_OPTIONS.textDecoration.map((o) => `<option value="${o}"${o === v("textDecoration") ? " selected" : ""}>${o}</option>`).join("")}
+        </select>
       </div>
     </div>`;
 }
+
+const SELECT_OPTIONS: Record<string, string[]> = {
+  textCase:       ["none", "uppercase", "lowercase", "capitalize"],
+  textDecoration: ["none", "underline", "line-through"],
+};
 
 // Builds the simple single-value input area
 function simpleValueFieldHtml(type: string, value = ""): string {
   const isColor = type === "color";
   const isFontFamily = type === "fontFamilies";
+  const selectOptions = SELECT_OPTIONS[type];
+
+  if (selectOptions) {
+    const opts = selectOptions.map(
+      (o) => `<option value="${o}"${o === value ? " selected" : ""}>${o}</option>`
+    ).join("");
+    return `
+    <div class="form-field">
+      <label class="form-label" for="token-value-input">Value</label>
+      <select class="select" id="token-value-input">${opts}</select>
+    </div>`;
+  }
+
   const { placeholder } = getTypeDef(type);
   return `
     <div class="form-field">

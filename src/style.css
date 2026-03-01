@@ -1268,6 +1268,9 @@ html.col-resizing * {
   width: 100%;
 }
 
+.select {
+  background-size: 14px;
+}
 .select.form-input {
   background-size: 14px;
 }
