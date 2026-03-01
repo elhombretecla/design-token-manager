@@ -109,14 +109,17 @@ const TYPO_KEY_VARIANTS: ReadonlyArray<readonly [string, string]> = [
   // [input key to probe on the proxy, canonical output key]
   ["fontFamilies",   "fontFamilies"],
   ["fontFamily",     "fontFamilies"],
+  ["font-families",  "fontFamilies"],
   ["font-family",    "fontFamilies"],
   ["fontSizes",      "fontSizes"],
   ["fontSize",       "fontSizes"],
+  ["font-sizes",     "fontSizes"],
   ["font-size",      "fontSizes"],
   // TokenTypographyValue (resolvedValue) uses "fontWeights" (plural);
   // TokenTypographyValueString (value) uses "fontWeight" (singular).
   // Probe plural first so resolved values are captured correctly.
   ["fontWeights",    "fontWeight"],
+  ["font-weights",   "fontWeight"],
   ["fontWeight",     "fontWeight"],
   ["font-weight",    "fontWeight"],
   ["lineHeight",     "lineHeight"],
@@ -129,6 +132,50 @@ const TYPO_KEY_VARIANTS: ReadonlyArray<readonly [string, string]> = [
   ["text-decoration","textDecoration"],
 ] as const;
 
+// Extract the first meaningful scalar from potentially nested proxy objects.
+// Used for resolved composite sub-fields that may arrive wrapped in CLJS/Transit
+// containers (non-enumerable via JSON.stringify).
+function extractCompositeScalar(raw: unknown): string | number | undefined {
+  if (raw == null) return undefined;
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    return s || undefined;
+  }
+  if (typeof raw === "number") return raw;
+
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      const found = extractCompositeScalar(item);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  if (typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+    for (const k of ["value", "name", "color", "hex", "rgba"]) {
+      try {
+        const found = extractCompositeScalar(obj[k]);
+        if (found !== undefined) return found;
+      } catch { /* skip */ }
+    }
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tail = (raw as any)["$tail$"];
+      const found = extractCompositeScalar(tail);
+      if (found !== undefined) return found;
+    } catch { /* skip */ }
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const arr = (raw as any)["$arr$"];
+      const found = extractCompositeScalar(arr);
+      if (found !== undefined) return found;
+    } catch { /* skip */ }
+  }
+
+  return undefined;
+}
+
 function serializeTypographyValue(rawValue: unknown): string {
   if (rawValue == null)             return "";
   if (typeof rawValue === "string") return rawValue;
@@ -140,7 +187,18 @@ function serializeTypographyValue(rawValue: unknown): string {
     if (outKey in out) continue; // already captured a value for this output key
     try {
       const val = obj[srcKey];
-      if (val !== undefined && val !== null) out[outKey] = val;
+      if (val === undefined || val === null) continue;
+      if (outKey === "fontFamilies") {
+        const family = serializeFontFamilyValue(val);
+        if (family) out[outKey] = family;
+        continue;
+      }
+      if (typeof val === "object") {
+        const scalar = extractCompositeScalar(val);
+        if (scalar !== undefined) out[outKey] = scalar;
+        continue;
+      }
+      out[outKey] = val;
     } catch {
       // Proxy getter threw; skip
     }
@@ -202,7 +260,18 @@ function serializeShadowValue(rawValue: unknown): string {
     if (outKey in out) continue;
     try {
       const val = obj[srcKey];
-      if (val !== undefined && val !== null) out[outKey] = val;
+      if (val === undefined || val === null) continue;
+      if (outKey === "color") {
+        const color = extractCompositeScalar(val);
+        if (color !== undefined) out[outKey] = String(color);
+        continue;
+      }
+      if (typeof val === "object") {
+        const scalar = extractCompositeScalar(val);
+        if (scalar !== undefined) out[outKey] = scalar;
+        continue;
+      }
+      out[outKey] = val;
     } catch { /* skip */ }
   }
 
@@ -335,10 +404,11 @@ function serializeTypographyResolvedValue(raw: unknown): string {
     const first = raw[0];
     if (typeof first === "string") return first;
     if (typeof first === "object" && first !== null) {
-      try {
-        const str = JSON.stringify(first);
-        if (str && str !== "{}") return str;
-      } catch { /* fall through */ }
+      // Reuse the typography serializer so fields with nested/non-enumerable
+      // structures (notably fontFamilies / fontSizes) are normalised exactly
+      // like token.value before they reach the UI.
+      const str = serializeTypographyValue(first);
+      if (str && str !== "{}") return str;
     }
   }
 
@@ -392,10 +462,10 @@ function serializeShadowResolvedValue(raw: unknown): string {
     const first = raw[0];
     if (typeof first === "string") return first;
     if (typeof first === "object" && first !== null) {
-      try {
-        const str = JSON.stringify(first);
-        if (str && str !== "{}") return str;
-      } catch { /* fall through */ }
+      // Reuse the shadow serializer to keep `color` extraction/probing
+      // consistent with token.value serialisation.
+      const str = serializeShadowValue(first);
+      if (str && str !== "{}") return str;
     }
   }
 
@@ -491,6 +561,116 @@ function tryParseObject(value: string): string | object {
   return value ?? "";
 }
 
+function isAliasRefString(value: string): boolean {
+  return /^\{[^{}]+\}$/.test((value ?? "").trim());
+}
+
+function findTokenByNameGlobal(name: string): IToken | undefined {
+  const cat = catalog();
+  for (const set of cat.sets) {
+    const found = set.tokens.find((t) => t.name === name);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function serializeScalarTokenValue(token: IToken): string | undefined {
+  try {
+    if (token.resolvedValue != null) {
+      if (token.type === "fontFamilies") {
+        const rv = serializeFontFamilyValue(token.resolvedValue);
+        if (rv) return rv;
+      } else {
+        const rv = valueToString(token.resolvedValue);
+        if (rv && rv !== "{}") return rv;
+      }
+    }
+
+    if (token.type === "fontFamilies") {
+      const v = serializeFontFamilyValue(token.value);
+      return v || undefined;
+    }
+    const v = valueToString(token.value);
+    return (v && v !== "{}") ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveAliasReferenceToScalar(
+  maybeAlias: string,
+  seen: Set<string> = new Set(),
+): string | undefined {
+  const s = (maybeAlias ?? "").trim();
+  if (!isAliasRefString(s)) return s || undefined;
+
+  const refName = s.slice(1, -1).trim();
+  if (!refName || seen.has(refName)) return undefined;
+  seen.add(refName);
+
+  const refToken = findTokenByNameGlobal(refName);
+  if (!refToken) return undefined;
+
+  const resolved = serializeScalarTokenValue(refToken);
+  if (!resolved) return undefined;
+  if (isAliasRefString(resolved)) {
+    return resolveAliasReferenceToScalar(resolved, seen);
+  }
+  return resolved;
+}
+
+function parseJsonObjectString(input: string | undefined): Record<string, unknown> {
+  if (!input) return {};
+  const s = input.trim();
+  if (!s.startsWith("{") || !s.endsWith("}")) return {};
+  try {
+    const parsed: unknown = JSON.parse(s);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch { /* ignore malformed JSON */ }
+  return {};
+}
+
+function enrichTypographyResolvedValue(
+  token: IToken,
+  resolvedTypography: string | undefined,
+  serializedTypographyValue: string,
+): string | undefined {
+  if (token.type !== "typography") return resolvedTypography;
+
+  const out = parseJsonObjectString(resolvedTypography);
+  const valueObj = parseJsonObjectString(serializedTypographyValue);
+
+  const keys = ["fontFamilies", "fontSizes", "fontWeight"] as const;
+  for (const key of keys) {
+    const current = out[key];
+    const fallback = valueObj[key];
+
+    const currentStr =
+      typeof current === "string" ? current :
+      typeof current === "number" ? String(current) :
+      undefined;
+    const fallbackStr =
+      typeof fallback === "string" ? fallback :
+      typeof fallback === "number" ? String(fallback) :
+      undefined;
+
+    const candidate = currentStr ?? fallbackStr;
+    if (!candidate) continue;
+    if (!isAliasRefString(candidate)) {
+      if (!(key in out)) out[key] = candidate;
+      continue;
+    }
+
+    const resolved = resolveAliasReferenceToScalar(candidate);
+    if (resolved) out[key] = resolved;
+  }
+
+  if (Object.keys(out).length === 0) return resolvedTypography;
+  return JSON.stringify(out);
+}
+
 function serializeSet(set: ITokenSet) {
   return {
     id: set.id,
@@ -548,6 +728,10 @@ function serializeToken(token: IToken) {
         : token.type === "fontFamilies"
           ? serializeFontFamilyValue(token.value)
           : valueToString(token.value);
+
+  if (token.type === "typography") {
+    resolvedValue = enrichTypographyResolvedValue(token, resolvedValue, value);
+  }
 
   // ── Debug log A ─────────────────────────────────────────────────────────
   // import.meta.env.DEV is replaced at build time by Vite → true in `npm run

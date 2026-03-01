@@ -100,7 +100,7 @@ export function normalizeTypographyValueToForm(raw: string): Record<string, stri
   // string element is deep inside nested nodes.  extractFontFamilyBestEffort
   // uses collectStringsDeep to traverse the entire structure without assuming
   // any specific field path.
-  const rawFamily = m["font-family"] ?? m.fontFamilies ?? m.fontFamily;
+  const rawFamily = m["font-families"] ?? m["font-family"] ?? m.fontFamilies ?? m.fontFamily;
   const family = extractFontFamilyBestEffort(rawFamily);
   if (family) form.fontFamily = family;
 
@@ -108,11 +108,11 @@ export function normalizeTypographyValueToForm(raw: string): Record<string, stri
   // These are plain strings, alias refs ("{…}"), or numbers.  Try kebab-case
   // keys first (Penpot internal), then API camelCase / plural variants.
   const simpleFields: Array<[keys: string[], formKey: string]> = [
-    [["font-size",       "fontSizes",    "fontSize"],              "fontSize"],
+    [["font-sizes",      "font-size",    "fontSizes",    "fontSize"], "fontSize"],
     // fontWeights (plural) is used by TokenTypographyValue (resolvedValue);
     // fontWeight (singular) is used by TokenTypographyValueString (value).
     // Probe both so the form populates correctly for either source.
-    [["font-weight",     "fontWeights",  "fontWeight"],            "fontWeight"],
+    [["font-weights",    "font-weight",  "fontWeights",  "fontWeight"], "fontWeight"],
     [["line-height",     "lineHeight"],                            "lineHeight"],
     [["letter-spacing",  "letterSpacing"],                         "letterSpacing"],
     [["text-case",       "textCase"],                              "textCase"],

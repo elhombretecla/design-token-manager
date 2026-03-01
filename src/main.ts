@@ -952,6 +952,24 @@ function compositeShadowPreviewHtml(vals: Record<string, string>, tokenId?: stri
 /** Render the "Resolved value" cell, with composite-aware formatting. */
 function resolvedValueCellHtml(token: SerializedToken): string {
   const raw = token.resolvedValue ?? token.value;
+
+  // Best-effort alias resolver for composite sub-properties when Penpot omits
+  // or leaves unresolved fields in composite `resolvedValue` payloads.
+  const resolveAliasRef = (aliasValue: string, seen: Set<string> = new Set()): string | undefined => {
+    if (!isAlias(aliasValue)) return aliasValue;
+    const name = aliasValue.trim().slice(1, -1);
+    if (!name || seen.has(name)) return undefined;
+    seen.add(name);
+
+    const ref = state.tokens.find((t) => t.name === name);
+    if (!ref) return undefined;
+
+    const candidate = (ref.resolvedValue ?? ref.value ?? "").trim();
+    if (!candidate) return undefined;
+    if (isAlias(candidate)) return resolveAliasRef(candidate, seen);
+    return candidate;
+  };
+
   if (token.type === "typography") {
     const form = normalizeTypographyValueToForm(raw);
     // Supplement fields that Penpot omits from the resolved value (fontFamilies
@@ -963,15 +981,28 @@ function resolvedValueCellHtml(token: SerializedToken): string {
         "fontFamily", "fontSize", "fontWeight",
         "lineHeight", "letterSpacing", "textCase", "textDecoration",
       ]) {
-        if (!form[key] && valueForm[key] && !isAlias(valueForm[key])) {
-          form[key] = valueForm[key];
+        if (!form[key] && valueForm[key]) {
+          const v = valueForm[key];
+          if (isAlias(v)) {
+            const resolved = resolveAliasRef(v);
+            if (resolved) form[key] = resolved;
+          } else {
+            form[key] = v;
+          }
         }
       }
     }
     // Strip any alias values that ended up in the resolved form — the resolved
     // column must never show alias references, only plain resolved values.
     for (const key of Object.keys(form)) {
-      if (isAlias(form[key])) delete form[key];
+      if (isAlias(form[key])) {
+        const resolved = resolveAliasRef(form[key]);
+        if (resolved) {
+          form[key] = resolved;
+        } else {
+          delete form[key];
+        }
+      }
     }
     return compositeTypographyPreviewHtml(form);
   }
@@ -981,14 +1012,27 @@ function resolvedValueCellHtml(token: SerializedToken): string {
     if (token.resolvedValue) {
       const valueForm = normalizeShadowValueToPreview(token.value);
       for (const key of ["x", "y", "blur", "spread", "color", "type"]) {
-        if (!form[key] && valueForm[key] && !isAlias(valueForm[key])) {
-          form[key] = valueForm[key];
+        if (!form[key] && valueForm[key]) {
+          const v = valueForm[key];
+          if (isAlias(v)) {
+            const resolved = resolveAliasRef(v);
+            if (resolved) form[key] = resolved;
+          } else {
+            form[key] = v;
+          }
         }
       }
     }
     // Strip any alias values from the resolved form.
     for (const key of Object.keys(form)) {
-      if (isAlias(form[key])) delete form[key];
+      if (isAlias(form[key])) {
+        const resolved = resolveAliasRef(form[key]);
+        if (resolved) {
+          form[key] = resolved;
+        } else {
+          delete form[key];
+        }
+      }
     }
     return compositeShadowPreviewHtml(form);
   }
