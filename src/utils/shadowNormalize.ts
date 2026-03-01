@@ -103,6 +103,17 @@ export function normalizeShadowValueToPreview(raw: string): Record<string, strin
     }
   }
 
+  // TokenShadowValue (resolvedValue) uses inset: boolean instead of type: string.
+  // Derive type from inset when type is still missing after simpleFields.
+  if (!result.type) {
+    const inset = m["inset"];
+    if (inset === true || inset === "true") {
+      result.type = "inner-shadow";
+    } else if (inset !== undefined && inset !== null) {
+      result.type = "drop-shadow";
+    }
+  }
+
   // Color: may be a plain CSS string, alias ref, or a nested Transit object
   const rawColor = m["color"];
   if (rawColor !== undefined && rawColor !== null) {

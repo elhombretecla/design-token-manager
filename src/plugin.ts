@@ -155,17 +155,19 @@ function serializeTypographyValue(rawValue: unknown): string {
   try { return JSON.stringify(rawValue) ?? ""; } catch { return ""; }
 }
 
-// Shadow token values are stored in Penpot as ClojureScript maps exposed
-// through a JS Proxy, same as typography.  JSON.stringify on a Proxy often
-// returns "{}" because the underlying CLJS properties are not JS-enumerable.
-// We bypass that by explicitly reading each known property name by string key.
+// Shadow token values in the Penpot API (docs: doc.plugins.penpot.dev):
+//   TokenShadow.value        → string | TokenShadowValueString[]
+//   TokenShadow.resolvedValue→ TokenShadowValue[]
 //
-// Penpot may expose shadow fields under several key variants:
-//   API canonical:  x, y, blur, spread, color, type
-//   CLJS kebab:     offset-x, offset-y
-//   camelCase:      offsetX, offsetY
+// TokenShadowValueString: { color, inset, offsetX, offsetY, spread, blur } (strings)
+// TokenShadowValue:       { color, inset, offsetX, offsetY, spread, blur }
+//                           (inset: boolean; offsets/blur/spread: numbers)
 //
-// We probe all variants and emit under canonical output keys.
+// Both are plain JS — no CLJS deserialisation needed.
+// We probe multiple key-name variants to handle:
+//   • TokenShadowValueString/Value: offsetX, offsetY  (camelCase)
+//   • Our internal storage format:  x, y, type        (legacy, pre-API)
+//   • CLJS kebab-case residuals:    offset-x, offset-y
 const SHADOW_KEY_VARIANTS: ReadonlyArray<readonly [string, string]> = [
   ["type",      "type"],
   ["x",         "x"],
@@ -183,63 +185,45 @@ function serializeShadowValue(rawValue: unknown): string {
   if (rawValue == null)             return "";
   if (typeof rawValue === "string") return rawValue;
 
-  // CLJS PersistentVector: when resolvedValue is still a CLJS proxy (not yet
-  // a clean JS array) Penpot wraps it in a PersistentVector whose elements
-  // live under the $tail$ key.  Array.isArray returns false for these proxies,
-  // so we must unwrap $tail$ first before attempting the array-element path.
-  if (!Array.isArray(rawValue) && typeof rawValue === "object" && rawValue !== null) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tail = (rawValue as any)["$tail$"];
-    if (Array.isArray(tail)) return serializeShadowValue(tail);
-  }
-
-  // New Penpot API: TokenShadow.value is TokenShadowValueString[] and
-  // resolvedValue is TokenShadowValue[].  Both are arrays — take the first
-  // element and serialize it as a plain object.
+  // Both value and resolvedValue are plain JS arrays — take the first element.
   let src: unknown = rawValue;
   if (Array.isArray(rawValue)) {
     if (rawValue.length === 0) return "";
     src = rawValue[0];
-    if (src === null) return "";
-    if (typeof src === "string") return src; // alias string stored in array
-    if (typeof src !== "object") return "";
+    if (src === null)              return "";
+    if (typeof src === "string")   return src; // alias string stored in array
+    if (typeof src !== "object")   return "";
   }
 
   const obj = src as Record<string, unknown>;
   const out: Record<string, unknown> = {};
 
   for (const [srcKey, outKey] of SHADOW_KEY_VARIANTS) {
-    if (outKey in out) continue; // already captured a value for this output key
+    if (outKey in out) continue;
     try {
       const val = obj[srcKey];
       if (val !== undefined && val !== null) out[outKey] = val;
-    } catch {
-      // Proxy getter threw; skip
-    }
+    } catch { /* skip */ }
   }
 
-  // New API uses `inset: boolean` (TokenShadowValue) or `inset: string`
-  // (TokenShadowValueString) instead of `type: "drop-shadow"/"inner-shadow"`.
-  // Convert to the canonical `type` key the UI normalizer expects, so
-  // normalizeShadowValueToPreview doesn't need changing.
+  // TokenShadowValue (resolvedValue) uses inset: boolean.
+  // TokenShadowValueString (value) uses inset: string ("true"/"false").
+  // Convert to the canonical type key the UI normalizer expects.
   if (!("type" in out)) {
     try {
       const inset = obj["inset"];
       if (inset === true || inset === "true") {
         out.type = "inner-shadow";
       } else if (inset !== undefined && inset !== null) {
-        // false / "false" / any other value → drop-shadow (the default)
         out.type = "drop-shadow";
       }
-    } catch { /* proxy threw */ }
+    } catch { /* skip */ }
   }
 
   if (Object.keys(out).length > 0) {
     return JSON.stringify(out);
   }
 
-  // Last resort: generic stringify. May produce "{}" for opaque proxies,
-  // but the explicit-key path above should always win for real Penpot tokens.
   try { return JSON.stringify(rawValue) ?? ""; } catch { return ""; }
 }
 
@@ -354,6 +338,58 @@ function serializeTypographyResolvedValue(raw: unknown): string {
   return serializeTypographyValue(raw);
 }
 
+// ── shadow resolvedValue serializer ────────────────────────────────────────
+// resolvedValue for shadow tokens is documented as TokenShadowValue[] (plain JS
+// array), but current Penpot builds still deliver it as a CLJS PersistentVector —
+// the same trie structure used for typography:
+//
+//   { $cnt$: 1, $tail$: [<inner CLJS proxy>], ... }
+//
+// The inner element in $tail$[0] is the actual shadow data object.  Its properties
+// (inset, offsetX, offsetY, blur, spread, color) ARE accessible via direct key
+// access through the CLJS proxy getter, but are NOT JS-enumerable, so
+// JSON.stringify returns "{}".
+//
+// Strategy:
+//   1. Plain JS array  → JSON.stringify(first) directly (future-proof).
+//   2. CLJS PV object  → traverse $tail$ to get inner element, then key-probe it
+//                        with serializeShadowValue (same technique as typography).
+//   3. Fallback        → key-probe the raw value itself.
+function serializeShadowResolvedValue(raw: unknown): string {
+  if (raw == null) return "";
+  if (typeof raw === "string") return raw;
+
+  // 1. Plain JS array: TokenShadowValue[] in newer Penpot builds.
+  if (Array.isArray(raw) && raw.length > 0) {
+    const first = raw[0];
+    if (typeof first === "string") return first;
+    if (typeof first === "object" && first !== null) {
+      try {
+        const str = JSON.stringify(first);
+        if (str && str !== "{}") return str;
+      } catch { /* fall through */ }
+    }
+  }
+
+  // 2. CLJS PersistentVector: actual shadow data lives in $tail$[0].
+  //    The inner element is a CLJS proxy — not enumerable via JSON.stringify,
+  //    but its fields (inset, offsetX, color…) are readable by direct key access.
+  //    Pass it to serializeShadowValue which does exactly that key-probing.
+  if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tail = (raw as any)["$tail$"];
+    if (Array.isArray(tail) && tail.length > 0) {
+      const inner = tail[0];
+      if (inner !== null && typeof inner === "object") {
+        return serializeShadowValue(inner);
+      }
+    }
+  }
+
+  // 3. Final fallback: key-probing on the raw value itself.
+  return serializeShadowValue(raw);
+}
+
 // fontFamilies tokens require the value as a JS array per Penpot's Malli schema:
 //   [:or [:vector :app.common.schema/text]  alias-ref-re]
 // A plain string like "DM Sans" triggers :malli.core/invalid-type.
@@ -447,7 +483,10 @@ function serializeToken(token: IToken) {
         // both the new array format and the old CLJS proxy fallback.
         rv = serializeTypographyResolvedValue(token.resolvedValue);
       } else if (token.type === "shadow") {
-        rv = serializeShadowValue(token.resolvedValue);
+        // resolvedValue is now TokenShadowValue[] (plain JS array of objects)
+        // in current Penpot builds.  serializeShadowResolvedValue handles both
+        // the new array format and the old key-probing fallback.
+        rv = serializeShadowResolvedValue(token.resolvedValue);
       } else if (token.type === "fontFamilies") {
         // Do NOT use resolvedValueString — it contains the raw CLJS pr-str
         // representation (EDN format, e.g. [["DM" "Sans"]] with spaces, not

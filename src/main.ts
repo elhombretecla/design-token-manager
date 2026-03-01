@@ -961,7 +961,21 @@ function resolvedValueCellHtml(token: SerializedToken): string {
     return compositeTypographyPreviewHtml(form);
   }
   if (token.type === "shadow") {
-    return compositeShadowPreviewHtml(normalizeShadowValueToPreview(raw));
+    const form = normalizeShadowValueToPreview(raw);
+    if (token.resolvedValue) {
+      if (Object.keys(form).length === 0) {
+        // Resolved value existed but produced no usable data (e.g. CLJS proxy
+        // serialisation failed entirely). Fall back to the stored value form so
+        // the preview renders rather than showing .composite-empty.
+        return compositeShadowPreviewHtml(normalizeShadowValueToPreview(token.value));
+      }
+      // Supplement type if still missing (inset:boolean not yet converted).
+      if (!form.type) {
+        const valueForm = normalizeShadowValueToPreview(token.value);
+        if (valueForm.type) form.type = valueForm.type;
+      }
+    }
+    return compositeShadowPreviewHtml(form);
   }
   return `<span class="token-resolved-text" title="${esc(raw)}">${esc(raw)}</span>`;
 }
