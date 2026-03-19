@@ -6,9 +6,14 @@
    ════════════════════════════════════════════════════════════════════════ */
 
 /* ── Reset & base ─────────────────────────────────────────────────────── */
-*, *::before, *::after { box-sizing: border-box; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
 
-html, body {
+html,
+body {
   margin: 0;
   padding: 0;
   height: 100%;
@@ -166,12 +171,12 @@ html, body {
   background-color: var(--background-tertiary);
 }
 
-.set-tree-group.active > .set-tree-group-row {
+.set-tree-group.active>.set-tree-group-row {
   border-left-color: var(--accent-primary);
   background-color: var(--background-tertiary);
 }
 
-.set-tree-group.active > .set-tree-group-row .set-name {
+.set-tree-group.active>.set-tree-group-row .set-name {
   color: var(--foreground-primary);
 }
 
@@ -313,6 +318,11 @@ html, body {
 .breadcrumb-prefix {
   color: var(--foreground-secondary);
   font-size: var(--font-size-s);
+  cursor: pointer;
+}
+
+.breadcrumb-prefix:hover {
+  color: var(--foreground-primary);
 }
 
 .breadcrumb-set {
@@ -414,7 +424,8 @@ html, body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;           /* vertical: clipped — body scrolls internally */
+  overflow: hidden;
+  /* vertical: clipped — body scrolls internally */
   --col-widths: 52px 170px 185px 160px 110px 36px;
 }
 
@@ -443,7 +454,7 @@ html, body {
 }
 
 /* All header cells: clip content + allow resize-handle positioning */
-.tokens-table-header > div {
+.tokens-table-header>div {
   font-size: var(--font-size-xs);
   font-weight: var(--font-weight-bold);
   color: var(--foreground-secondary);
@@ -451,10 +462,13 @@ html, body {
   align-items: center;
   text-transform: none;
   letter-spacing: 0;
-  overflow: hidden;     /* ← clip overflowing label text */
-  min-width: 0;         /* ← allow grid cell to shrink below content size */
+  overflow: hidden;
+  /* ← clip overflowing label text */
+  min-width: 0;
+  /* ← allow grid cell to shrink below content size */
   padding: 0 var(--spacing-8);
-  position: relative;   /* ← anchor for the absolutely-positioned handle */
+  position: relative;
+  /* ← anchor for the absolutely-positioned handle */
   height: 100%;
   justify-content: right;
 }
@@ -466,13 +480,15 @@ html, body {
   white-space: nowrap;
   flex: 1;
   min-width: 0;
-  padding-right: 8px; /* leave room for the resize handle */
+  padding-right: 8px;
+  /* leave room for the resize handle */
 }
 
 /* ── Resize handle ─────────────────────────────────────────────────── */
 .col-resize-handle {
   position: absolute;
-  right: -3px;   /* sit right on the column boundary */
+  right: -3px;
+  /* sit right on the column boundary */
   top: 0;
   bottom: 0;
   width: 8px;
@@ -559,7 +575,8 @@ html.col-resizing * {
   background-color: var(--background-secondary);
   border-bottom: 1px solid var(--background-quaternary);
   position: sticky;
-  top: 36px; /* sits right below the 36 px table header */
+  top: 36px;
+  /* sits right below the 36 px table header */
   z-index: 1;
 }
 
@@ -616,7 +633,7 @@ html.col-resizing * {
  * Without min-width:0 a grid child can never shrink below its content size,
  * which causes the misalignment visible in the screenshot.
  */
-.token-row > div {
+.token-row>div {
   overflow: hidden;
   min-width: 0;
   padding: 0 4px;
@@ -672,7 +689,8 @@ html.col-resizing * {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-  flex: 1; /* expand inside col-value-inner but never overflow it */
+  flex: 1;
+  /* expand inside col-value-inner but never overflow it */
 }
 
 /* ── Alias chip ─────────────────────────────────────────── */
@@ -770,7 +788,7 @@ html.col-resizing * {
   flex-shrink: 1;
 }
 
-.cprop > svg {
+.cprop>svg {
   flex-shrink: 0;
   color: var(--foreground-secondary);
   opacity: 0.7;
@@ -847,8 +865,14 @@ html.col-resizing * {
   align-items: center;
   gap: 4px;
 }
-.dtm-inspector-sum::-webkit-details-marker { display: none; }
-.dtm-inspector-sum::marker               { display: none; }
+
+.dtm-inspector-sum::-webkit-details-marker {
+  display: none;
+}
+
+.dtm-inspector-sum::marker {
+  display: none;
+}
 
 .dtm-inspector-bd {
   padding: 6px 8px;
@@ -1099,7 +1123,8 @@ html.col-resizing * {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-  display: block; /* block makes text-overflow work inside a grid cell */
+  display: block;
+  /* block makes text-overflow work inside a grid cell */
   width: 100%;
 }
 
@@ -1150,6 +1175,8 @@ html.col-resizing * {
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.13);
   min-width: 148px;
   padding: 4px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
 }
 
 .context-menu-item {
@@ -1271,6 +1298,7 @@ html.col-resizing * {
 .select {
   background-size: 14px;
 }
+
 .select.form-input {
   background-size: 14px;
 }
@@ -1317,7 +1345,8 @@ html.col-resizing * {
 /* ── Modal alias picker popover ─────────────────────────────────────────── */
 .modal-alias-picker {
   position: fixed;
-  z-index: 860; /* above modal-overlay (800) and cp-popover (850) */
+  z-index: 860;
+  /* above modal-overlay (800) and cp-popover (850) */
   background-color: var(--background-primary);
   border: 1px solid var(--background-quaternary);
   border-radius: 8px;
@@ -1430,7 +1459,6 @@ html.col-resizing * {
 .cmp-th {
   display: flex;
   align-items: center;
-  border-right: 1px solid var(--background-secondary);
   gap: 4px;
   font-size: var(--font-size-xs);
   font-weight: var(--font-weight-bold);
@@ -1530,15 +1558,75 @@ html.col-resizing * {
   color: var(--foreground-secondary);
   font-style: italic;
   line-height: 1.3;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cmp-td-missing>span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+}
+
+.cmp-add-token-btn {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: 1px dashed var(--foreground-secondary);
+  background: none;
+  color: var(--foreground-secondary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background-color 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.cmp-td-missing:hover .cmp-add-token-btn {
+  opacity: 1;
+}
+
+.cmp-add-token-btn:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background-color: var(--background-tertiary);
 }
 
 /* Loading indicator while compared set tokens are being fetched */
 .cmp-td-loading {
   font-size: var(--font-size-s);
   color: var(--foreground-secondary);
+}
+
+/* Editable value cells in comparison table */
+.cmp-td-editable {
+  position: relative;
+  overflow: visible;
+}
+
+.cmp-edit-btn {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+
+.cmp-td-editable:hover .cmp-edit-btn {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* ── Sidebar footer (Math info link) ────────────────────────────────────── */
@@ -1600,8 +1688,8 @@ html.col-resizing * {
   margin: 0 0 10px;
 }
 
-.math-section-heading + .math-section-heading,
-.math-divider + .math-section-heading {
+.math-section-heading+.math-section-heading,
+.math-divider+.math-section-heading {
   margin-top: 0;
 }
 
@@ -1758,7 +1846,8 @@ html.col-resizing * {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  border: 2px solid rgba(0, 0, 0, 0.45); /* color toggled by JS */
+  border: 2px solid rgba(0, 0, 0, 0.45);
+  /* color toggled by JS */
   box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.6);
   transform: translate(-50%, -50%);
   pointer-events: none;
@@ -1780,14 +1869,12 @@ html.col-resizing * {
 }
 
 .cp-hue-track {
-  background: linear-gradient(
-    to right,
-    hsl(0,   100%, 50%), hsl(30,  100%, 50%), hsl(60,  100%, 50%),
-    hsl(90,  100%, 50%), hsl(120, 100%, 50%), hsl(150, 100%, 50%),
-    hsl(180, 100%, 50%), hsl(210, 100%, 50%), hsl(240, 100%, 50%),
-    hsl(270, 100%, 50%), hsl(300, 100%, 50%), hsl(330, 100%, 50%),
-    hsl(360, 100%, 50%)
-  );
+  background: linear-gradient(to right,
+      hsl(0, 100%, 50%), hsl(30, 100%, 50%), hsl(60, 100%, 50%),
+      hsl(90, 100%, 50%), hsl(120, 100%, 50%), hsl(150, 100%, 50%),
+      hsl(180, 100%, 50%), hsl(210, 100%, 50%), hsl(240, 100%, 50%),
+      hsl(270, 100%, 50%), hsl(300, 100%, 50%), hsl(330, 100%, 50%),
+      hsl(360, 100%, 50%));
 }
 
 /* Checkerboard base for the alpha track */

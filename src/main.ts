@@ -1,13 +1,34 @@
 import "./style.css";
 import { FONT_CATALOG } from "./assets/fontCatalog.generated";
-import type { SerializedSet, SerializedToken, SerializedTheme, AliasPickerSet, PluginMessage, SortKey } from "./shared/types";
+import type {
+  SerializedSet,
+  SerializedToken,
+  SerializedTheme,
+  AliasPickerSet,
+  PluginMessage,
+  SortKey,
+} from "./shared/types";
 import { esc } from "./utils/esc";
 import { isAlias, parseMixedValue } from "./utils/alias";
-import { hsvToRgb, rgbToHsv, hexToRgb, rgbToHex, rgbToHsl, hslToRgb, parseCssColor } from "./utils/color";
+import {
+  hsvToRgb,
+  rgbToHsv,
+  hexToRgb,
+  rgbToHex,
+  rgbToHsl,
+  hslToRgb,
+  parseCssColor,
+} from "./utils/color";
 import { transitToPlain } from "./utils/transit";
-import { collectStringsDeep, extractFontFamilyBestEffort } from "./utils/fontExtraction";
+import {
+  collectStringsDeep,
+  extractFontFamilyBestEffort,
+} from "./utils/fontExtraction";
 import { normalizeShadowValueToPreview } from "./utils/shadowNormalize";
-import { sanitizeTypographyValueForApi, normalizeTypographyValueToForm } from "./utils/typographyNormalize";
+import {
+  sanitizeTypographyValueForApi,
+  normalizeTypographyValueToForm,
+} from "./utils/typographyNormalize";
 
 // Pre-compute a flat sorted array of family names once at module load.
 // Used by the font picker to avoid re-mapping on every keystroke.
@@ -44,6 +65,10 @@ const compareState = {
   // O(1) token-by-name lookup per compared set.  Populated when tokens-loaded
   // arrives for a compared set; cleared on removeComparedSet / exitCompareMode.
   comparedTokenMaps: new Map<string, Map<string, SerializedToken>>(),
+  sortCol: null as string | null, // null = default, "name", or a setId
+  sortDir: "asc" as "asc" | "desc",
+  nameColWidth: 170,
+  setColWidths: new Map<string, number>(), // setId → pixel width
 };
 
 // ── Set tree expansion state ──────────────────────────────────────────────
@@ -52,7 +77,14 @@ const compareState = {
 const collapsedGroups = new Set<string>();
 
 type TreeNode =
-  | { kind: "group"; path: string; label: string; children: TreeNode[]; hasSet: boolean; setId?: string }
+  | {
+      kind: "group";
+      path: string;
+      label: string;
+      children: TreeNode[];
+      hasSet: boolean;
+      setId?: string;
+    }
   | { kind: "set"; fullName: string; label: string; setId: string };
 
 function buildSetTree(sets: SerializedSet[]): TreeNode[] {
@@ -142,8 +174,8 @@ interface AliasEditorState {
   pickerSets: AliasPickerSet[];
   chipEl: HTMLElement;
   collapsedGroups: Set<string>; // setIds currently collapsed
-  // When set, the editor is targeting a sub-property of a composite token.
   compositeCtx?: { propKey: string; propType: string };
+  targetSetId?: string;
 }
 
 let aliasEditor: AliasEditorState | null = null;
@@ -186,15 +218,18 @@ function sendToPlugin(message: object): void {
 // Default widths in px  — index matches grid column order
 // [check, name, value, resolved, type, actions]
 const COL_DEFAULT = [52, 170, 185, 160, 110, 36];
-const COL_MIN     = [52,  80,  80,  80,  80, 36];
-const COL_FIXED   = new Set([0, 5]); // check + actions are not user-resizable
+const COL_MIN = [52, 80, 80, 80, 80, 36];
+const COL_FIXED = new Set([0, 5]); // check + actions are not user-resizable
 
 let colWidths = [...COL_DEFAULT];
 
 function applyColWidths(): void {
   const wrap = document.querySelector<HTMLElement>(".tokens-table-wrap");
   if (!wrap) return;
-  wrap.style.setProperty("--col-widths", colWidths.map((w) => `${w}px`).join(" "));
+  wrap.style.setProperty(
+    "--col-widths",
+    colWidths.map((w) => `${w}px`).join(" "),
+  );
 }
 
 interface ColDrag {
@@ -228,7 +263,7 @@ function onDocMouseMove(e: MouseEvent): void {
   const delta = e.clientX - activeDrag.startX;
   colWidths[activeDrag.colIdx] = Math.max(
     COL_MIN[activeDrag.colIdx],
-    Math.round(activeDrag.startWidth + delta)
+    Math.round(activeDrag.startWidth + delta),
   );
   applyColWidths();
 }
@@ -297,7 +332,10 @@ window.addEventListener("message", (event: MessageEvent) => {
         } else {
           renderTokenTable();
         }
-      } else if (compareState.active && compareState.comparedSetIds.includes(msg.setId)) {
+      } else if (
+        compareState.active &&
+        compareState.comparedSetIds.includes(msg.setId)
+      ) {
         // Build O(1) name→token map for the newly loaded compared set.
         const nameMap = new Map<string, SerializedToken>();
         for (const t of msg.tokens) nameMap.set(t.name, t);
@@ -312,7 +350,10 @@ window.addEventListener("message", (event: MessageEvent) => {
       renderSidebar();
       renderOverview();
       // If active set was deleted, go back to overview
-      if (state.selectedSetId && !state.sets.find((s) => s.id === state.selectedSetId)) {
+      if (
+        state.selectedSetId &&
+        !state.sets.find((s) => s.id === state.selectedSetId)
+      ) {
         selectSet(null); // also exits compare mode via selectSet
       } else if (state.selectedSetId) {
         // Refresh breadcrumb name in case it was renamed
@@ -323,9 +364,13 @@ window.addEventListener("message", (event: MessageEvent) => {
       // re-render so column headers reflect any renames.
       if (compareState.active) {
         const existingIds = new Set(state.sets.map((s) => s.id));
-        const removed = compareState.comparedSetIds.filter((id) => !existingIds.has(id));
+        const removed = compareState.comparedSetIds.filter(
+          (id) => !existingIds.has(id),
+        );
         for (const id of removed) {
-          compareState.comparedSetIds = compareState.comparedSetIds.filter((i) => i !== id);
+          compareState.comparedSetIds = compareState.comparedSetIds.filter(
+            (i) => i !== id,
+          );
           compareState.comparedTokenMaps.delete(id);
         }
         renderCompareTable();
@@ -347,7 +392,10 @@ window.addEventListener("message", (event: MessageEvent) => {
           renderTokenTable();
           renderSidebar();
         }
-      } else if (compareState.active && compareState.comparedSetIds.includes(msg.setId)) {
+      } else if (
+        compareState.active &&
+        compareState.comparedSetIds.includes(msg.setId)
+      ) {
         // Keep a compared set's token map fresh if it receives a push update.
         const nameMap = new Map<string, SerializedToken>();
         for (const t of msg.tokens) nameMap.set(t.name, t);
@@ -357,7 +405,8 @@ window.addEventListener("message", (event: MessageEvent) => {
       break;
 
     case "all-tokens-by-type-loaded": {
-      const expectedType = aliasEditor?.compositeCtx?.propType ?? aliasEditor?.token.type;
+      const expectedType =
+        aliasEditor?.compositeCtx?.propType ?? aliasEditor?.token.type;
       if (aliasEditor && msg.tokenType === expectedType) {
         aliasEditor.pickerSets = msg.sets;
         renderAliasEditor();
@@ -432,7 +481,7 @@ function toggleSidebar(): void {
 // Cube-shaped set icon matching Penpot's component icon style.
 const ICON_SET_SVG = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 1.5L13.5 4.75V11.25L8 14.5L2.5 11.25V4.75Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M2.5 4.75L8 8L13.5 4.75" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 8V14.5" stroke="currentColor" stroke-width="1.3"/></svg>`;
 const ICON_CHEVRON_RIGHT = `<svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-const ICON_CHEVRON_DOWN  = `<svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ICON_CHEVRON_DOWN = `<svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 function renderTreeNodes(nodes: TreeNode[], depth: number): string {
   return nodes
@@ -440,11 +489,13 @@ function renderTreeNodes(nodes: TreeNode[], depth: number): string {
       const indent = depth * 14;
       if (node.kind === "group") {
         const isExpanded = !collapsedGroups.has(node.path);
-        const isActive   = node.hasSet && node.setId === state.selectedSetId;
-        const children   = isExpanded
+        const isActive = node.hasSet && node.setId === state.selectedSetId;
+        const children = isExpanded
           ? `<ul class="set-tree-children">${renderTreeNodes(node.children, depth + 1)}</ul>`
           : "";
-        const setIcon = node.hasSet ? `<span class="set-icon">${ICON_SET_SVG}</span>` : "";
+        const setIcon = node.hasSet
+          ? `<span class="set-icon">${ICON_SET_SVG}</span>`
+          : "";
         return `<li class="set-tree-group${isActive ? " active" : ""}" data-group-path="${esc(node.path)}"${node.hasSet ? ` data-set-id="${esc(node.setId!)}"` : ""}><div class="set-tree-group-row" style="padding-left:${indent + 10}px"><button class="set-tree-chevron" data-toggle-group="${esc(node.path)}" aria-expanded="${isExpanded}" aria-label="${isExpanded ? "Collapse" : "Expand"} ${esc(node.label)}">${isExpanded ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT}</button>${setIcon}<span class="set-name">${esc(node.label)}</span></div>${children}</li>`;
       } else {
         const isActive = node.setId === state.selectedSetId;
@@ -458,9 +509,14 @@ function renderSidebar(): void {
   el("sidebar-sets-count").textContent = String(state.sets.length);
   el("sidebar-themes-count").textContent = String(state.themes.length);
 
-  const query = (el<HTMLInputElement>("sidebar-search-input")?.value ?? "").toLowerCase();
+  const cmpBtn = el<HTMLButtonElement>("sidebar-compare-btn");
+  if (cmpBtn) cmpBtn.disabled = state.sets.length < 2;
+
+  const query = (
+    el<HTMLInputElement>("sidebar-search-input")?.value ?? ""
+  ).toLowerCase();
   const filtered = state.sets.filter(
-    (s) => !query || s.name.toLowerCase().includes(query)
+    (s) => !query || s.name.toLowerCase().includes(query),
   );
 
   const listEl = el("sidebar-sets-list");
@@ -474,47 +530,53 @@ function renderSidebar(): void {
     listEl.innerHTML = renderTreeNodes(tree, 0);
 
     // Leaf set items: click selects, right-click opens context menu.
-    listEl.querySelectorAll<HTMLElement>(".set-item[data-set-id]").forEach((item) => {
-      item.addEventListener("click", () => selectSet(item.dataset.setId!));
-      item.addEventListener("contextmenu", (e) => {
-        e.preventDefault();
-        showSetContextMenu(e as MouseEvent, item.dataset.setId!);
+    listEl
+      .querySelectorAll<HTMLElement>(".set-item[data-set-id]")
+      .forEach((item) => {
+        item.addEventListener("click", () => selectSet(item.dataset.setId!));
+        item.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          showSetContextMenu(e as MouseEvent, item.dataset.setId!);
+        });
       });
-    });
 
     // Chevron buttons toggle expand/collapse without triggering selection.
-    listEl.querySelectorAll<HTMLElement>("[data-toggle-group]").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const path = (btn as HTMLElement).dataset.toggleGroup!;
-        if (collapsedGroups.has(path)) collapsedGroups.delete(path);
-        else collapsedGroups.add(path);
-        renderSidebar();
+    listEl
+      .querySelectorAll<HTMLElement>("[data-toggle-group]")
+      .forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const path = (btn as HTMLElement).dataset.toggleGroup!;
+          if (collapsedGroups.has(path)) collapsedGroups.delete(path);
+          else collapsedGroups.add(path);
+          renderSidebar();
+        });
       });
-    });
 
     // Group rows: click toggles expand/collapse; also selects when group is a real set.
-    listEl.querySelectorAll<HTMLElement>(".set-tree-group-row").forEach((row) => {
-      const groupLi = row.closest<HTMLElement>(".set-tree-group");
-      if (!groupLi) return;
-      row.addEventListener("click", (e) => {
-        if ((e.target as HTMLElement).closest("[data-toggle-group]")) return;
-        const path = groupLi.dataset.groupPath!;
-        if (collapsedGroups.has(path)) collapsedGroups.delete(path);
-        else collapsedGroups.add(path);
+    listEl
+      .querySelectorAll<HTMLElement>(".set-tree-group-row")
+      .forEach((row) => {
+        const groupLi = row.closest<HTMLElement>(".set-tree-group");
+        if (!groupLi) return;
+        row.addEventListener("click", (e) => {
+          if ((e.target as HTMLElement).closest("[data-toggle-group]")) return;
+          const path = groupLi.dataset.groupPath!;
+          if (collapsedGroups.has(path)) collapsedGroups.delete(path);
+          else collapsedGroups.add(path);
+          if (groupLi.dataset.setId) {
+            selectSet(groupLi.dataset.setId);
+          } else {
+            renderSidebar();
+          }
+        });
         if (groupLi.dataset.setId) {
-          selectSet(groupLi.dataset.setId);
-        } else {
-          renderSidebar();
+          row.addEventListener("contextmenu", (e) => {
+            e.preventDefault();
+            showSetContextMenu(e as MouseEvent, groupLi.dataset.setId!);
+          });
         }
       });
-      if (groupLi.dataset.setId) {
-        row.addEventListener("contextmenu", (e) => {
-          e.preventDefault();
-          showSetContextMenu(e as MouseEvent, groupLi.dataset.setId!);
-        });
-      }
-    });
   }
 
   // Themes
@@ -531,7 +593,7 @@ function renderSidebar(): void {
         (t) =>
           `<li class="set-item body-s" title="${esc(t.group ? t.group + "/" + t.name : t.name)}">
         <span class="set-name">${esc(t.group ? t.group + "/" + t.name : t.name)}</span>
-       </li>`
+       </li>`,
       )
       .join("");
   }
@@ -542,9 +604,11 @@ function renderSidebar(): void {
 // ════════════════════════════════════════════════════════════════════════
 
 function renderOverview(): void {
-  const query = (el<HTMLInputElement>("overview-search-input")?.value ?? "").toLowerCase();
+  const query = (
+    el<HTMLInputElement>("overview-search-input")?.value ?? ""
+  ).toLowerCase();
   const filtered = state.sets.filter(
-    (s) => !query || s.name.toLowerCase().includes(query)
+    (s) => !query || s.name.toLowerCase().includes(query),
   );
 
   const listEl = el("sets-overview-list");
@@ -581,7 +645,7 @@ function renderOverview(): void {
           <circle cx="12.5" cy="8" r="1.2" fill="currentColor"/>
         </svg>
       </button>
-    </div>`
+    </div>`,
     )
     .join("");
 
@@ -609,30 +673,38 @@ function getSortedTokens(tokens: SerializedToken[]): SerializedToken[] {
   const key = state.sortKey;
   const dir = state.sortDir === "asc" ? 1 : -1;
   return [...tokens].sort((a, b) => {
-    const av = (key === "resolvedValue"
-      ? (a.resolvedValue ?? a.value)
-      : a[key]
-    )?.toLowerCase() ?? "";
-    const bv = (key === "resolvedValue"
-      ? (b.resolvedValue ?? b.value)
-      : b[key]
-    )?.toLowerCase() ?? "";
+    const av =
+      (key === "resolvedValue"
+        ? (a.resolvedValue ?? a.value)
+        : a[key]
+      )?.toLowerCase() ?? "";
+    const bv =
+      (key === "resolvedValue"
+        ? (b.resolvedValue ?? b.value)
+        : b[key]
+      )?.toLowerCase() ?? "";
     return av < bv ? -dir : av > bv ? dir : 0;
   });
 }
 
 function updateSortHeaders(): void {
-  document.querySelectorAll<HTMLElement>(".th-sortable[data-sort-key]").forEach((th) => {
-    const icon = th.querySelector<HTMLElement>(".sort-icon");
-    if (!icon) return;
-    const isActive = th.dataset.sortKey === state.sortKey;
-    icon.classList.toggle("is-active", isActive);
-    icon.classList.toggle("is-desc", isActive && state.sortDir === "desc");
-    th.setAttribute(
-      "aria-sort",
-      isActive ? (state.sortDir === "asc" ? "ascending" : "descending") : "none"
-    );
-  });
+  document
+    .querySelectorAll<HTMLElement>(".th-sortable[data-sort-key]")
+    .forEach((th) => {
+      const icon = th.querySelector<HTMLElement>(".sort-icon");
+      if (!icon) return;
+      const isActive = th.dataset.sortKey === state.sortKey;
+      icon.classList.toggle("is-active", isActive);
+      icon.classList.toggle("is-desc", isActive && state.sortDir === "desc");
+      th.setAttribute(
+        "aria-sort",
+        isActive
+          ? state.sortDir === "asc"
+            ? "ascending"
+            : "descending"
+          : "none",
+      );
+    });
 }
 
 function onSortHeaderClick(e: MouseEvent): void {
@@ -723,7 +795,11 @@ function aliasChipHtml(token: SerializedToken): string {
   return `<div class="alias-chip" data-token-id="${esc(token.id)}" title="${esc(token.value)}" role="button" tabindex="0" aria-label="Alias: ${esc(aliasName)}">${swatchHtml}<span class="alias-chip-name">${esc(aliasName)}</span>${ALIAS_GEAR_ICON}</div>`;
 }
 
-function inlineAliasChipHtml(aliasName: string, parentTokenId: string, broken: boolean): string {
+function inlineAliasChipHtml(
+  aliasName: string,
+  parentTokenId: string,
+  broken: boolean,
+): string {
   if (broken) {
     return `<span class="mixed-alias-broken" title="Broken reference: {${esc(aliasName)}}">{${esc(aliasName)}}</span>`;
   }
@@ -744,31 +820,31 @@ interface CompositePropDef {
 // Keys match the UI "form" shape produced by normalizeTypographyValueToForm:
 // fontFamily / fontSize (singular) for the two irregular fields.
 const TYPOGRAPHY_PROP_ORDER: CompositePropDef[] = [
-  { key: "fontFamily",     label: "Family",      iconKey: "fontFamilies"   },
-  { key: "fontSize",       label: "Size",        iconKey: "fontSizes"      },
-  { key: "fontWeight",     label: "Weight",      iconKey: "fontWeights"    },
-  { key: "lineHeight",     label: "Line Height", iconKey: "dimension"      },
-  { key: "letterSpacing",  label: "Spacing",     iconKey: "letterSpacing"  },
-  { key: "textCase",       label: "Case",        iconKey: "textCase"       },
-  { key: "textDecoration", label: "Decoration",  iconKey: "textDecoration" },
+  { key: "fontFamily", label: "Family", iconKey: "fontFamilies" },
+  { key: "fontSize", label: "Size", iconKey: "fontSizes" },
+  { key: "fontWeight", label: "Weight", iconKey: "fontWeights" },
+  { key: "lineHeight", label: "Line Height", iconKey: "dimension" },
+  { key: "letterSpacing", label: "Spacing", iconKey: "letterSpacing" },
+  { key: "textCase", label: "Case", iconKey: "textCase" },
+  { key: "textDecoration", label: "Decoration", iconKey: "textDecoration" },
 ];
 
 // Maps each composite sub-property key to the token type used when fetching
 // candidates for the alias picker.
 const COMPOSITE_PROP_TYPE: Record<string, string> = {
   // Shadow sub-props
-  color:  "color",
-  x:      "dimension",
-  y:      "dimension",
-  blur:   "dimension",
+  color: "color",
+  x: "dimension",
+  y: "dimension",
+  blur: "dimension",
   spread: "dimension",
   // Typography sub-props (UI keys from normalizeTypographyValueToForm)
-  fontFamily:     "fontFamilies",
-  fontSize:       "fontSizes",
-  fontWeight:     "fontWeights",
-  lineHeight:     "dimension",
-  letterSpacing:  "letterSpacing",
-  textCase:       "textCase",
+  fontFamily: "fontFamilies",
+  fontSize: "fontSizes",
+  fontWeight: "fontWeights",
+  lineHeight: "dimension",
+  letterSpacing: "letterSpacing",
+  textCase: "textCase",
   textDecoration: "textDecoration",
 };
 
@@ -789,30 +865,36 @@ function getCompositeSubValue(token: SerializedToken, propKey: string): string {
 function buildCompositeValueWithProp(
   token: SerializedToken,
   propKey: string,
-  newSubValue: string
+  newSubValue: string,
 ): string {
   if (token.type === "shadow") {
-    const v = normalizeShadowValueToPreview(token.value) as Record<string, string>;
+    const v = normalizeShadowValueToPreview(token.value) as Record<
+      string,
+      string
+    >;
     const u = { ...v, [propKey]: newSubValue };
     return JSON.stringify({
-      type:   u.type   ?? "drop-shadow",
-      x:      u.x      ?? "0",
-      y:      u.y      ?? "0",
-      blur:   u.blur   ?? "0",
+      type: u.type ?? "drop-shadow",
+      x: u.x ?? "0",
+      y: u.y ?? "0",
+      blur: u.blur ?? "0",
       spread: u.spread ?? "0",
-      color:  u.color  ?? "rgba(0,0,0,0.25)",
+      color: u.color ?? "rgba(0,0,0,0.25)",
     });
   }
   if (token.type === "typography") {
-    const v = normalizeTypographyValueToForm(token.value) as Record<string, string>;
+    const v = normalizeTypographyValueToForm(token.value) as Record<
+      string,
+      string
+    >;
     const u = { ...v, [propKey]: newSubValue };
     const apiForm: Record<string, string> = {
-      fontFamilies:   u.fontFamily     ?? "",
-      fontSizes:      u.fontSize       ?? "",
-      fontWeight:     u.fontWeight     ?? "",
-      lineHeight:     u.lineHeight     ?? "",
-      letterSpacing:  u.letterSpacing  ?? "",
-      textCase:       u.textCase       ?? "",
+      fontFamilies: u.fontFamily ?? "",
+      fontSizes: u.fontSize ?? "",
+      fontWeight: u.fontWeight ?? "",
+      lineHeight: u.lineHeight ?? "",
+      letterSpacing: u.letterSpacing ?? "",
+      textCase: u.textCase ?? "",
       textDecoration: u.textDecoration ?? "",
     };
     return JSON.stringify(sanitizeTypographyValueForApi(apiForm));
@@ -825,7 +907,7 @@ function buildCompositeValueWithProp(
 function compositeSubValueHtml(
   value: string,
   tokenId?: string,
-  propKey?: string
+  propKey?: string,
 ): string {
   if (!value) return `<span class="cprop-val cprop-val--muted">—</span>`;
 
@@ -857,27 +939,32 @@ function compositeSubValueHtml(
 
 const COMPOSITE_MAX_VISIBLE = 4;
 
-function compositeTypographyPreviewHtml(vals: Record<string, string>, tokenId?: string): string {
-  const entries = TYPOGRAPHY_PROP_ORDER
-    .map(({ key, label, iconKey }) => ({
-      key,
-      label,
-      icon: TOKEN_TYPE_ICONS[iconKey] ?? "",
-      value: vals[key] ?? "",
-    }))
+function compositeTypographyPreviewHtml(
+  vals: Record<string, string>,
+  tokenId?: string,
+): string {
+  const entries = TYPOGRAPHY_PROP_ORDER.map(({ key, label, iconKey }) => ({
+    key,
+    label,
+    icon: TOKEN_TYPE_ICONS[iconKey] ?? "",
+    value: vals[key] ?? "",
+  }))
     // Skip empty, "none", "normal" to keep the preview compact
-    .filter(({ value }) => value !== "" && value !== "none" && value !== "normal");
+    .filter(
+      ({ value }) => value !== "" && value !== "none" && value !== "normal",
+    );
 
   if (entries.length === 0) {
     return `<span class="composite-empty">—</span>`;
   }
 
   const visible = entries.slice(0, COMPOSITE_MAX_VISIBLE);
-  const hidden  = entries.slice(COMPOSITE_MAX_VISIBLE);
+  const hidden = entries.slice(COMPOSITE_MAX_VISIBLE);
 
   const items = visible
-    .map(({ key, label, icon, value }) =>
-      `<span class="cprop" title="${esc(label)}: ${esc(value)}">${icon}${compositeSubValueHtml(value, tokenId, key)}</span>`
+    .map(
+      ({ key, label, icon, value }) =>
+        `<span class="cprop" title="${esc(label)}: ${esc(value)}">${icon}${compositeSubValueHtml(value, tokenId, key)}</span>`,
     )
     .join("");
 
@@ -889,7 +976,10 @@ function compositeTypographyPreviewHtml(vals: Record<string, string>, tokenId?: 
   return `<div class="composite-preview">${items}${moreHint}</div>`;
 }
 
-function compositeShadowPreviewHtml(vals: Record<string, string>, tokenId?: string): string {
+function compositeShadowPreviewHtml(
+  vals: Record<string, string>,
+  tokenId?: string,
+): string {
   if (!vals || Object.keys(vals).length === 0) {
     return `<span class="composite-empty">—</span>`;
   }
@@ -905,14 +995,14 @@ function compositeShadowPreviewHtml(vals: Record<string, string>, tokenId?: stri
   if (vals.color) {
     if (isAlias(vals.color) || /\{[^{}]+\}/.test(vals.color)) {
       parts.push(
-        `<span class="cprop" title="Color: ${esc(vals.color)}">${TOKEN_TYPE_ICONS.color}${compositeSubValueHtml(vals.color, tokenId, "color")}</span>`
+        `<span class="cprop" title="Color: ${esc(vals.color)}">${TOKEN_TYPE_ICONS.color}${compositeSubValueHtml(vals.color, tokenId, "color")}</span>`,
       );
     } else {
       parts.push(
         `<span class="cprop" title="Color: ${esc(vals.color)}">` +
-        `<span class="color-swatch" style="background:${esc(vals.color)}" aria-hidden="true"></span>` +
-        `<span class="cprop-val">${esc(vals.color)}</span>` +
-        `</span>`
+          `<span class="color-swatch" style="background:${esc(vals.color)}" aria-hidden="true"></span>` +
+          `<span class="cprop-val">${esc(vals.color)}</span>` +
+          `</span>`,
       );
     }
   }
@@ -920,28 +1010,31 @@ function compositeShadowPreviewHtml(vals: Record<string, string>, tokenId?: stri
   // X / Y: show together with the dimension icon, each value rendered through
   // compositeSubValueHtml so that alias chips work (e.g. "{spacing.sm}").
   if (vals.x || vals.y) {
-    const titleParts = [vals.x && `x: ${vals.x}`, vals.y && `y: ${vals.y}`].filter(Boolean);
+    const titleParts = [
+      vals.x && `x: ${vals.x}`,
+      vals.y && `y: ${vals.y}`,
+    ].filter(Boolean);
     parts.push(
       `<span class="cprop" title="${esc(titleParts.join(", "))}">` +
-      TOKEN_TYPE_ICONS.dimension +
-      (vals.x ? compositeSubValueHtml(vals.x, tokenId, "x") : "") +
-      (vals.x && vals.y ? `<span class="cprop-sep">,</span>` : "") +
-      (vals.y ? compositeSubValueHtml(vals.y, tokenId, "y") : "") +
-      `</span>`
+        TOKEN_TYPE_ICONS.dimension +
+        (vals.x ? compositeSubValueHtml(vals.x, tokenId, "x") : "") +
+        (vals.x && vals.y ? `<span class="cprop-sep">,</span>` : "") +
+        (vals.y ? compositeSubValueHtml(vals.y, tokenId, "y") : "") +
+        `</span>`,
     );
   }
 
   // Blur
   if (vals.blur) {
     parts.push(
-      `<span class="cprop" title="Blur: ${esc(vals.blur)}">${TOKEN_TYPE_ICONS.opacity}${compositeSubValueHtml(vals.blur, tokenId, "blur")}</span>`
+      `<span class="cprop" title="Blur: ${esc(vals.blur)}">${TOKEN_TYPE_ICONS.opacity}${compositeSubValueHtml(vals.blur, tokenId, "blur")}</span>`,
     );
   }
 
   // Spread (omit when zero / empty to keep the preview compact)
   if (vals.spread && vals.spread !== "0") {
     parts.push(
-      `<span class="cprop" title="Spread: ${esc(vals.spread)}">${TOKEN_TYPE_ICONS.dimension}${compositeSubValueHtml(vals.spread, tokenId, "spread")}</span>`
+      `<span class="cprop" title="Spread: ${esc(vals.spread)}">${TOKEN_TYPE_ICONS.dimension}${compositeSubValueHtml(vals.spread, tokenId, "spread")}</span>`,
     );
   }
 
@@ -960,8 +1053,13 @@ function resolvedValueCellHtml(token: SerializedToken): string {
     if (token.resolvedValue) {
       const valueForm = normalizeTypographyValueToForm(token.value);
       for (const key of [
-        "fontFamily", "fontSize", "fontWeight",
-        "lineHeight", "letterSpacing", "textCase", "textDecoration",
+        "fontFamily",
+        "fontSize",
+        "fontWeight",
+        "lineHeight",
+        "letterSpacing",
+        "textCase",
+        "textDecoration",
       ]) {
         if (!form[key] && valueForm[key] && !isAlias(valueForm[key])) {
           form[key] = valueForm[key];
@@ -1000,10 +1098,16 @@ function valueCellHtml(token: SerializedToken): string {
   // Both table and modal go through the same normalizer adapter so key
   // names are always consistent between the preview and the edit form.
   if (token.type === "typography") {
-    return compositeTypographyPreviewHtml(normalizeTypographyValueToForm(token.value), token.id);
+    return compositeTypographyPreviewHtml(
+      normalizeTypographyValueToForm(token.value),
+      token.id,
+    );
   }
   if (token.type === "shadow") {
-    return compositeShadowPreviewHtml(normalizeShadowValueToPreview(token.value), token.id);
+    return compositeShadowPreviewHtml(
+      normalizeShadowValueToPreview(token.value),
+      token.id,
+    );
   }
 
   // Pure alias: entire value is a single {reference}
@@ -1029,7 +1133,7 @@ function valueCellHtml(token: SerializedToken): string {
 // ── Alias editor ─────────────────────────────────────────────────────────
 
 const CHEV_DOWN = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-const CHEV_UP   = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 10 4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const CHEV_UP = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 10 4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 function getOrCreateEditorPopover(): HTMLElement {
   let el = document.getElementById("alias-editor-popover");
@@ -1088,9 +1192,12 @@ function positionModalAliasPicker(): void {
   if (!popover) return;
   const rect = modalAliasPicker.anchorEl.getBoundingClientRect();
   const popWidth = 280;
-  const left = Math.min(rect.right - popWidth, window.innerWidth - popWidth - 8);
+  const left = Math.min(
+    rect.right - popWidth,
+    window.innerWidth - popWidth - 8,
+  );
   popover.style.width = `${popWidth}px`;
-  popover.style.top  = `${rect.bottom + 4}px`;
+  popover.style.top = `${rect.bottom + 4}px`;
   popover.style.left = `${Math.max(8, left)}px`;
 }
 
@@ -1100,7 +1207,11 @@ function renderModalAliasPicker(): void {
   if (!popover) return;
 
   const { pickerSets, searchValue, collapsedGroups } = modalAliasPicker;
-  const listContent = buildAliasPickerListHtml(pickerSets, searchValue, collapsedGroups);
+  const listContent = buildAliasPickerListHtml(
+    pickerSets,
+    searchValue,
+    collapsedGroups,
+  );
 
   popover.innerHTML = `
     <div class="alias-picker-search-row">
@@ -1109,35 +1220,47 @@ function renderModalAliasPicker(): void {
     </div>
     <div class="alias-picker-list" role="listbox">${listContent}</div>`;
 
-  const searchInput = popover.querySelector<HTMLInputElement>(".alias-picker-search")!;
+  const searchInput = popover.querySelector<HTMLInputElement>(
+    ".alias-picker-search",
+  )!;
   searchInput.focus();
-  searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+  searchInput.setSelectionRange(
+    searchInput.value.length,
+    searchInput.value.length,
+  );
   searchInput.addEventListener("input", () => {
-    if (modalAliasPicker) { modalAliasPicker.searchValue = searchInput.value; renderModalAliasPicker(); }
+    if (modalAliasPicker) {
+      modalAliasPicker.searchValue = searchInput.value;
+      renderModalAliasPicker();
+    }
   });
   searchInput.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeModalAliasPicker();
   });
 
-  popover.querySelectorAll<HTMLElement>(".alias-picker-group-label[data-set-id]").forEach((label) => {
-    label.addEventListener("click", () => {
-      if (!modalAliasPicker) return;
-      const setId = label.dataset.setId!;
-      if (modalAliasPicker.collapsedGroups.has(setId)) {
-        modalAliasPicker.collapsedGroups.delete(setId);
-      } else {
-        modalAliasPicker.collapsedGroups.add(setId);
-      }
-      renderModalAliasPicker();
+  popover
+    .querySelectorAll<HTMLElement>(".alias-picker-group-label[data-set-id]")
+    .forEach((label) => {
+      label.addEventListener("click", () => {
+        if (!modalAliasPicker) return;
+        const setId = label.dataset.setId!;
+        if (modalAliasPicker.collapsedGroups.has(setId)) {
+          modalAliasPicker.collapsedGroups.delete(setId);
+        } else {
+          modalAliasPicker.collapsedGroups.add(setId);
+        }
+        renderModalAliasPicker();
+      });
     });
-  });
 
-  popover.querySelectorAll<HTMLElement>(".alias-picker-item").forEach((item) => {
-    item.addEventListener("click", () => {
-      insertAliasIntoValueInput(item.dataset.tokenName!);
-      closeModalAliasPicker();
+  popover
+    .querySelectorAll<HTMLElement>(".alias-picker-item")
+    .forEach((item) => {
+      item.addEventListener("click", () => {
+        insertAliasIntoValueInput(item.dataset.tokenName!);
+        closeModalAliasPicker();
+      });
     });
-  });
 }
 
 function insertAliasIntoValueInput(tokenName: string): void {
@@ -1154,7 +1277,10 @@ function onModalAliasPickerOutsideClick(e: MouseEvent): void {
   const popover = document.getElementById("modal-alias-picker");
   if (!popover || !modalAliasPicker) return;
   const target = e.target as Node;
-  if (!popover.contains(target) && !modalAliasPicker.anchorEl.contains(target)) {
+  if (
+    !popover.contains(target) &&
+    !modalAliasPicker.anchorEl.contains(target)
+  ) {
     closeModalAliasPicker();
   }
 }
@@ -1163,15 +1289,33 @@ function closeModalAliasPicker(): void {
   modalAliasPicker = null;
   const popover = document.getElementById("modal-alias-picker");
   if (popover) popover.classList.add("modal-alias-picker--hidden");
-  document.removeEventListener("mousedown", onModalAliasPickerOutsideClick, true);
+  document.removeEventListener(
+    "mousedown",
+    onModalAliasPickerOutsideClick,
+    true,
+  );
 }
 
-function openModalAliasPicker(tokenType: string, anchorEl: HTMLElement, targetInputId = "token-value-input"): void {
+function openModalAliasPicker(
+  tokenType: string,
+  anchorEl: HTMLElement,
+  targetInputId = "token-value-input",
+): void {
   // Toggle: close if already open for the same trigger
-  if (modalAliasPicker && modalAliasPicker.anchorEl === anchorEl) { closeModalAliasPicker(); return; }
+  if (modalAliasPicker && modalAliasPicker.anchorEl === anchorEl) {
+    closeModalAliasPicker();
+    return;
+  }
   if (modalAliasPicker) closeModalAliasPicker();
 
-  modalAliasPicker = { tokenType, searchValue: "", pickerSets: [], collapsedGroups: new Set(), anchorEl, targetInputId };
+  modalAliasPicker = {
+    tokenType,
+    searchValue: "",
+    pickerSets: [],
+    collapsedGroups: new Set(),
+    anchorEl,
+    targetInputId,
+  };
 
   const popover = getOrCreateModalAliasPicker();
   popover.classList.remove("modal-alias-picker--hidden");
@@ -1180,7 +1324,11 @@ function openModalAliasPicker(tokenType: string, anchorEl: HTMLElement, targetIn
   sendToPlugin({ type: "get-all-tokens-by-type", tokenType });
 
   setTimeout(() => {
-    document.addEventListener("mousedown", onModalAliasPickerOutsideClick, true);
+    document.addEventListener(
+      "mousedown",
+      onModalAliasPickerOutsideClick,
+      true,
+    );
   }, 0);
 }
 
@@ -1196,7 +1344,11 @@ let fontPickerInput: HTMLInputElement | null = null;
 
 function openFontPicker(inputEl: HTMLInputElement): void {
   // Clicking an already-open picker's own input is a no-op
-  if (fontPickerInput === inputEl && document.getElementById("font-picker-dropdown")) return;
+  if (
+    fontPickerInput === inputEl &&
+    document.getElementById("font-picker-dropdown")
+  )
+    return;
   closeFontPicker();
   fontPickerInput = inputEl;
 
@@ -1331,7 +1483,9 @@ function bindFontPicker(): void {
 }
 
 function bindValueAliasTrigger(): void {
-  const btn = document.getElementById("value-alias-trigger-btn") as HTMLButtonElement | null;
+  const btn = document.getElementById(
+    "value-alias-trigger-btn",
+  ) as HTMLButtonElement | null;
   if (!btn) return;
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -1340,27 +1494,33 @@ function bindValueAliasTrigger(): void {
 }
 
 function bindCompositePropAliasTriggers(): void {
-  document.querySelectorAll<HTMLButtonElement>(".composite-alias-trigger").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      openModalAliasPicker(
-        btn.dataset.tokenType ?? "dimension",
-        btn,
-        btn.dataset.targetInput ?? ""
-      );
+  document
+    .querySelectorAll<HTMLButtonElement>(".composite-alias-trigger")
+    .forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openModalAliasPicker(
+          btn.dataset.tokenType ?? "dimension",
+          btn,
+          btn.dataset.targetInput ?? "",
+        );
+      });
     });
-  });
 }
 
 function saveAlias(): void {
   if (!aliasEditor) return;
-  const { token, inputValue, compositeCtx } = aliasEditor;
+  const { token, inputValue, compositeCtx, targetSetId } = aliasEditor;
   const value = compositeCtx
-    ? buildCompositeValueWithProp(token, compositeCtx.propKey, inputValue.trim())
+    ? buildCompositeValueWithProp(
+        token,
+        compositeCtx.propKey,
+        inputValue.trim(),
+      )
     : inputValue;
   sendToPlugin({
     type: "update-token",
-    setId: state.selectedSetId,
+    setId: targetSetId ?? state.selectedSetId,
     tokenId: token.id,
     name: token.name,
     value,
@@ -1375,7 +1535,7 @@ function saveAlias(): void {
 function buildAliasPickerListHtml(
   pickerSets: AliasPickerSet[],
   searchValue: string,
-  collapsedGroups: Set<string>
+  collapsedGroups: Set<string>,
 ): string {
   const query = searchValue.toLowerCase();
   const filtered = pickerSets
@@ -1383,38 +1543,48 @@ function buildAliasPickerListHtml(
       const sorted = [...s.tokens].sort((a, b) => a.name.localeCompare(b.name));
       return {
         ...s,
-        tokens: query ? sorted.filter((t) => t.name.toLowerCase().includes(query)) : sorted,
+        tokens: query
+          ? sorted.filter((t) => t.name.toLowerCase().includes(query))
+          : sorted,
       };
     })
     .filter((s) => s.tokens.length > 0);
 
-  if (pickerSets.length === 0) return `<div class="alias-picker-empty">Loading…</div>`;
-  if (filtered.length === 0)   return `<div class="alias-picker-empty">No tokens found</div>`;
+  if (pickerSets.length === 0)
+    return `<div class="alias-picker-empty">Loading…</div>`;
+  if (filtered.length === 0)
+    return `<div class="alias-picker-empty">No tokens found</div>`;
 
   const chevRight = `<svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m6 4 4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-  const chevDown  = `<svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const chevDown = `<svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
-  return filtered.map((s) => {
-    const collapsed = collapsedGroups.has(s.setId);
-    const chevron = collapsed ? chevRight : chevDown;
-    const items = collapsed ? "" : s.tokens.map((t) => {
-      const bg = t.type === "color" ? (t.resolvedValue ?? "") : "";
-      const preview = bg
-        ? `<span class="color-swatch" style="background:${esc(bg)}" aria-hidden="true"></span>`
-        : `<span class="alias-picker-item-icon">${tokenIcon(t.type)}</span>`;
-      return `<div class="alias-picker-item" data-token-name="${esc(t.name)}" role="option">
+  return filtered
+    .map((s) => {
+      const collapsed = collapsedGroups.has(s.setId);
+      const chevron = collapsed ? chevRight : chevDown;
+      const items = collapsed
+        ? ""
+        : s.tokens
+            .map((t) => {
+              const bg = t.type === "color" ? (t.resolvedValue ?? "") : "";
+              const preview = bg
+                ? `<span class="color-swatch" style="background:${esc(bg)}" aria-hidden="true"></span>`
+                : `<span class="alias-picker-item-icon">${tokenIcon(t.type)}</span>`;
+              return `<div class="alias-picker-item" data-token-name="${esc(t.name)}" role="option">
           <span class="alias-picker-item-name">${esc(t.name)}</span>
           ${preview}
         </div>`;
-    }).join("");
-    return `<div class="alias-picker-group">
+            })
+            .join("");
+      return `<div class="alias-picker-group">
       <div class="alias-picker-group-label" data-set-id="${esc(s.setId)}" role="button" tabindex="0">
         ${chevron}
         <span>${esc(s.setName)}</span>
       </div>
       ${items}
     </div>`;
-  }).join("");
+    })
+    .join("");
 }
 
 function renderAliasEditor(): void {
@@ -1443,29 +1613,42 @@ function renderAliasEditor(): void {
         <button class="alias-editor-save"   id="ae-save"   type="button" data-appearance="primary">Save</button>
       </div>`;
 
-    const input = popover.querySelector<HTMLInputElement>(".alias-editor-input")!;
+    const input = popover.querySelector<HTMLInputElement>(
+      ".alias-editor-input",
+    )!;
     input.focus();
     input.select();
-    input.addEventListener("input", () => { if (aliasEditor) aliasEditor.inputValue = input.value; });
+    input.addEventListener("input", () => {
+      if (aliasEditor) aliasEditor.inputValue = input.value;
+    });
     input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter")  { e.preventDefault(); saveAlias(); }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        saveAlias();
+      }
       if (e.key === "Escape") closeAliasEditor();
     });
     popover.querySelector("#ae-toggle")?.addEventListener("click", () => {
       if (!aliasEditor) return;
       aliasEditor.mode = "list";
       if (aliasEditor.pickerSets.length === 0) {
-        const tokenType = aliasEditor.compositeCtx?.propType ?? aliasEditor.token.type;
+        const tokenType =
+          aliasEditor.compositeCtx?.propType ?? aliasEditor.token.type;
         sendToPlugin({ type: "get-all-tokens-by-type", tokenType });
       }
       renderAliasEditor();
     });
-    popover.querySelector("#ae-cancel")?.addEventListener("click", closeAliasEditor);
-    popover.querySelector("#ae-save")?.addEventListener("click",   saveAlias);
-
+    popover
+      .querySelector("#ae-cancel")
+      ?.addEventListener("click", closeAliasEditor);
+    popover.querySelector("#ae-save")?.addEventListener("click", saveAlias);
   } else {
     // ── List mode ────────────────────────────────────────────────────────
-    const listContent = buildAliasPickerListHtml(pickerSets, searchValue, aliasEditor.collapsedGroups);
+    const listContent = buildAliasPickerListHtml(
+      pickerSets,
+      searchValue,
+      aliasEditor.collapsedGroups,
+    );
 
     popover.innerHTML = `
       <div class="alias-editor-input-row">
@@ -1481,36 +1664,51 @@ function renderAliasEditor(): void {
       </div>
       <div class="alias-picker-list" role="listbox">${listContent}</div>`;
 
-    const searchInput = popover.querySelector<HTMLInputElement>(".alias-picker-search")!;
+    const searchInput = popover.querySelector<HTMLInputElement>(
+      ".alias-picker-search",
+    )!;
     searchInput.focus();
-    searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+    searchInput.setSelectionRange(
+      searchInput.value.length,
+      searchInput.value.length,
+    );
     searchInput.addEventListener("input", () => {
-      if (aliasEditor) { aliasEditor.searchValue = searchInput.value; renderAliasEditor(); }
+      if (aliasEditor) {
+        aliasEditor.searchValue = searchInput.value;
+        renderAliasEditor();
+      }
     });
     popover.querySelector("#ae-toggle")?.addEventListener("click", () => {
-      if (aliasEditor) { aliasEditor.mode = "edit"; renderAliasEditor(); }
-    });
-    popover.querySelectorAll<HTMLElement>(".alias-picker-group-label[data-set-id]").forEach((label) => {
-      label.addEventListener("click", () => {
-        if (!aliasEditor) return;
-        const setId = label.dataset.setId!;
-        if (aliasEditor.collapsedGroups.has(setId)) {
-          aliasEditor.collapsedGroups.delete(setId);
-        } else {
-          aliasEditor.collapsedGroups.add(setId);
-        }
-        renderAliasEditor();
-      });
-    });
-
-    popover.querySelectorAll<HTMLElement>(".alias-picker-item").forEach((item) => {
-      item.addEventListener("click", () => {
-        if (!aliasEditor) return;
-        aliasEditor.inputValue = `{${item.dataset.tokenName!}}`;
+      if (aliasEditor) {
         aliasEditor.mode = "edit";
         renderAliasEditor();
-      });
+      }
     });
+    popover
+      .querySelectorAll<HTMLElement>(".alias-picker-group-label[data-set-id]")
+      .forEach((label) => {
+        label.addEventListener("click", () => {
+          if (!aliasEditor) return;
+          const setId = label.dataset.setId!;
+          if (aliasEditor.collapsedGroups.has(setId)) {
+            aliasEditor.collapsedGroups.delete(setId);
+          } else {
+            aliasEditor.collapsedGroups.add(setId);
+          }
+          renderAliasEditor();
+        });
+      });
+
+    popover
+      .querySelectorAll<HTMLElement>(".alias-picker-item")
+      .forEach((item) => {
+        item.addEventListener("click", () => {
+          if (!aliasEditor) return;
+          aliasEditor.inputValue = `{${item.dataset.tokenName!}}`;
+          aliasEditor.mode = "edit";
+          renderAliasEditor();
+        });
+      });
   }
 }
 
@@ -1518,7 +1716,7 @@ function onAliasChipClick(tokenId: string, chipEl: HTMLElement): void {
   const token = state.tokens.find((t) => t.id === tokenId);
   if (!token) return;
 
-  const propKey  = chipEl.dataset.propKey;
+  const propKey = chipEl.dataset.propKey;
   const propType = chipEl.dataset.propType;
   const compositeCtx = propKey && propType ? { propKey, propType } : undefined;
 
@@ -1562,7 +1760,9 @@ function onAliasChipClick(tokenId: string, chipEl: HTMLElement): void {
 
 function renderTokenTable(): void {
   const bodyEl = el("tokens-table-body");
-  const query = (el<HTMLInputElement>("tokens-search-input")?.value ?? "").toLowerCase();
+  const query = (
+    el<HTMLInputElement>("tokens-search-input")?.value ?? ""
+  ).toLowerCase();
 
   const filtered = getSortedTokens(
     state.tokens.filter(
@@ -1570,8 +1770,8 @@ function renderTokenTable(): void {
         !query ||
         t.name.toLowerCase().includes(query) ||
         t.type.toLowerCase().includes(query) ||
-        t.value.toLowerCase().includes(query)
-    )
+        t.value.toLowerCase().includes(query),
+    ),
   );
 
   if (filtered.length === 0) {
@@ -1629,7 +1829,7 @@ function renderTokenTable(): void {
           </svg>
         </button>
       </div>
-    </div>`
+    </div>`,
     )
     .join("");
 
@@ -1705,14 +1905,12 @@ function showContextMenu(x: number, y: number, items: MenuItem[]): void {
 
   menu.classList.remove("hidden");
 
-  // Smart positioning — account for dividers adding ~9 px each
-  const dividerCount = items.filter((i) => i.divider).length;
+  // Position using actual rendered size
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const mW = 160;
-  const mH = items.length * 38 + dividerCount * 9 + 8;
-  menu.style.left = `${Math.min(x, vw - mW - 4)}px`;
-  menu.style.top = `${Math.min(y, vh - mH - 4)}px`;
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.min(x, vw - rect.width - 4)}px`;
+  menu.style.top = `${Math.max(4, Math.min(y, vh - rect.height - 4))}px`;
 
   menu.querySelectorAll<HTMLElement>(".context-menu-item").forEach((item) => {
     item.addEventListener("click", () => {
@@ -1823,8 +2021,11 @@ function showModal(html: string): void {
     .forEach((btn) => btn.addEventListener("click", closeModal));
   // Focus first input
   setTimeout(
-    () => el("modal-container").querySelector<HTMLElement>("input, select, textarea")?.focus(),
-    50
+    () =>
+      el("modal-container")
+        .querySelector<HTMLElement>("input, select, textarea")
+        ?.focus(),
+    50,
   );
 }
 
@@ -1884,7 +2085,10 @@ function showNewSetModal(): void {
 
   const doCreate = () => {
     const name = nameInput.value.trim();
-    if (!name) { nameInput.classList.add("error"); return; }
+    if (!name) {
+      nameInput.classList.add("error");
+      return;
+    }
     sendToPlugin({ type: "create-set", name });
     closeModal();
   };
@@ -1923,7 +2127,10 @@ function showRenameSetModal(set: SerializedSet): void {
 
   const doRename = () => {
     const newName = input.value.trim();
-    if (!newName || newName === set.name) { closeModal(); return; }
+    if (!newName || newName === set.name) {
+      closeModal();
+      return;
+    }
     sendToPlugin({ type: "rename-set", setId: set.id, newName });
     closeModal();
   };
@@ -2055,22 +2262,62 @@ interface TokenTypeDef {
 }
 
 const TOKEN_TYPES: TokenTypeDef[] = [
-  { value: "color", label: "Color", placeholder: "Enter a value or alias with {alias}" },
-  { value: "borderRadius", label: "Border Radius", placeholder: "e.g. 4px or {alias.radius}" },
-  { value: "dimension", label: "Dimension", placeholder: "e.g. 16px or {alias}" },
-  { value: "fontFamilies", label: "Font Family", placeholder: "e.g. Inter, sans-serif" },
-  { value: "fontSizes", label: "Font Size", placeholder: "e.g. 16px or {alias}" },
-  { value: "fontWeights", label: "Font Weight", placeholder: "e.g. 400 or bold" },
-  { value: "letterSpacing", label: "Letter Spacing", placeholder: "e.g. 0.05em or {alias}" },
+  {
+    value: "color",
+    label: "Color",
+    placeholder: "Enter a value or alias with {alias}",
+  },
+  {
+    value: "borderRadius",
+    label: "Border Radius",
+    placeholder: "e.g. 4px or {alias.radius}",
+  },
+  {
+    value: "dimension",
+    label: "Dimension",
+    placeholder: "e.g. 16px or {alias}",
+  },
+  {
+    value: "fontFamilies",
+    label: "Font Family",
+    placeholder: "e.g. Inter, sans-serif",
+  },
+  {
+    value: "fontSizes",
+    label: "Font Size",
+    placeholder: "e.g. 16px or {alias}",
+  },
+  {
+    value: "fontWeights",
+    label: "Font Weight",
+    placeholder: "e.g. 400 or bold",
+  },
+  {
+    value: "letterSpacing",
+    label: "Letter Spacing",
+    placeholder: "e.g. 0.05em or {alias}",
+  },
   { value: "number", label: "Number", placeholder: "e.g. 8" },
   { value: "opacity", label: "Opacity", placeholder: "e.g. 0.5 or 50%" },
   { value: "rotation", label: "Rotation", placeholder: "e.g. 45" },
   { value: "shadow", label: "Shadow", placeholder: "" },
   { value: "sizing", label: "Sizing", placeholder: "e.g. 100px or {alias}" },
   { value: "spacing", label: "Spacing", placeholder: "e.g. 8px or {alias}" },
-  { value: "borderWidth", label: "Stroke Width", placeholder: "e.g. 1px or {alias}" },
-  { value: "textCase", label: "Text Case", placeholder: "uppercase | lowercase | capitalize | none" },
-  { value: "textDecoration", label: "Text Decoration", placeholder: "none | underline | line-through" },
+  {
+    value: "borderWidth",
+    label: "Stroke Width",
+    placeholder: "e.g. 1px or {alias}",
+  },
+  {
+    value: "textCase",
+    label: "Text Case",
+    placeholder: "uppercase | lowercase | capitalize | none",
+  },
+  {
+    value: "textDecoration",
+    label: "Text Decoration",
+    placeholder: "none | underline | line-through",
+  },
   { value: "typography", label: "Typography", placeholder: "" },
 ];
 
@@ -2084,7 +2331,14 @@ function getTypeDef(value: string): TokenTypeDef {
 // CATALOG_MAX_UNFILTERED rows when no search query is active.
 
 // Builds the value fields section for shadow tokens
-function shadowFieldsHtml(x = "0", y = "4", blur = "8", spread = "0", color = "rgba(0,0,0,0.25)", type = "drop-shadow"): string {
+function shadowFieldsHtml(
+  x = "0",
+  y = "4",
+  blur = "8",
+  spread = "0",
+  color = "rgba(0,0,0,0.25)",
+  type = "drop-shadow",
+): string {
   return `
     <div class="form-field">
       <label class="form-label">Shadow type</label>
@@ -2235,7 +2489,7 @@ function typographyFieldsHtml(vals: Record<string, string> = {}): string {
 }
 
 const SELECT_OPTIONS: Record<string, string[]> = {
-  textCase:       ["none", "uppercase", "lowercase", "capitalize"],
+  textCase: ["none", "uppercase", "lowercase", "capitalize"],
   textDecoration: ["none", "underline", "line-through"],
 };
 
@@ -2246,9 +2500,12 @@ function simpleValueFieldHtml(type: string, value = ""): string {
   const selectOptions = SELECT_OPTIONS[type];
 
   if (selectOptions) {
-    const opts = selectOptions.map(
-      (o) => `<option value="${o}"${o === value ? " selected" : ""}>${o}</option>`
-    ).join("");
+    const opts = selectOptions
+      .map(
+        (o) =>
+          `<option value="${o}"${o === value ? " selected" : ""}>${o}</option>`,
+      )
+      .join("");
     return `
     <div class="form-field">
       <label class="form-label" for="token-value-input">Value</label>
@@ -2267,10 +2524,14 @@ function simpleValueFieldHtml(type: string, value = ""): string {
                id="token-value-input"
                value="${esc(value)}"
                placeholder="${esc(placeholder)}"
-               autocomplete="off"${isFontFamily ? ' data-font-picker="true"' : ''} />
-        ${isFontFamily ? `<button type="button" class="icon-btn fp-chevron-btn"
+               autocomplete="off"${isFontFamily ? ' data-font-picker="true"' : ""} />
+        ${
+          isFontFamily
+            ? `<button type="button" class="icon-btn fp-chevron-btn"
                 data-font-picker-trigger="token-value-input"
-                title="Browse fonts">${CHEV_DOWN}</button></div>` : ""}
+                title="Browse fonts">${CHEV_DOWN}</button></div>`
+            : ""
+        }
         <button type="button" class="icon-btn value-alias-trigger" id="value-alias-trigger-btn"
                 title="Insert alias reference" data-token-type="${esc(type)}">
           ${VALUE_ALIAS_INSERT_ICON}
@@ -2280,7 +2541,10 @@ function simpleValueFieldHtml(type: string, value = ""): string {
 }
 
 function readShadowValue(): string {
-  const type = (document.querySelector<HTMLInputElement>('input[name="shadow-type"]:checked'))?.value ?? "drop-shadow";
+  const type =
+    document.querySelector<HTMLInputElement>(
+      'input[name="shadow-type"]:checked',
+    )?.value ?? "drop-shadow";
   return JSON.stringify({
     type,
     x: el<HTMLInputElement>("shadow-x")?.value ?? "0",
@@ -2297,12 +2561,12 @@ function readTypographyValue(): string {
   // TokenTypographyValueString.  Empty strings are stripped by the
   // sanitizer so Penpot never receives token_value_empty_fn errors.
   const raw: Record<string, string> = {
-    fontFamilies:   el<HTMLInputElement>("typo-family")?.value       ?? "",
-    fontSizes:      el<HTMLInputElement>("typo-size")?.value         ?? "",
-    fontWeight:     el<HTMLInputElement>("typo-weight")?.value       ?? "",
-    lineHeight:     el<HTMLInputElement>("typo-line-height")?.value  ?? "",
-    letterSpacing:  el<HTMLInputElement>("typo-letter-spacing")?.value ?? "",
-    textCase:       el<HTMLInputElement>("typo-text-case")?.value   ?? "",
+    fontFamilies: el<HTMLInputElement>("typo-family")?.value ?? "",
+    fontSizes: el<HTMLInputElement>("typo-size")?.value ?? "",
+    fontWeight: el<HTMLInputElement>("typo-weight")?.value ?? "",
+    lineHeight: el<HTMLInputElement>("typo-line-height")?.value ?? "",
+    letterSpacing: el<HTMLInputElement>("typo-letter-spacing")?.value ?? "",
+    textCase: el<HTMLInputElement>("typo-text-case")?.value ?? "",
     textDecoration: el<HTMLInputElement>("typo-text-decoration")?.value ?? "",
   };
   return JSON.stringify(sanitizeTypographyValueForApi(raw));
@@ -2321,8 +2585,10 @@ function readTokenValue(type: string): string {
 // ── State ─────────────────────────────────────────────────────────────
 
 interface CpState {
-  h: number; s: number; v: number; // 0-360, 0-100, 0-100
-  a: number;                        // alpha 0-100
+  h: number;
+  s: number;
+  v: number; // 0-360, 0-100, 0-100
+  a: number; // alpha 0-100
   mode: "hex" | "rgb" | "hsl";
   inputId: string;
   swatchId: string;
@@ -2381,7 +2647,7 @@ function getOrCreateCp(): HTMLElement {
 
 function cpDrag(
   target: HTMLElement,
-  onMove: (x: number, y: number, w: number, h: number) => void
+  onMove: (x: number, y: number, w: number, h: number) => void,
 ): void {
   target.addEventListener("mousedown", (e: MouseEvent) => {
     e.preventDefault();
@@ -2410,23 +2676,26 @@ function cpBindEvents(): void {
   // Saturation-Value area
   cpDrag(document.getElementById("cp-sv-area")!, (x, y, w, h) => {
     if (!cpState) return;
-    cpState.s = cpClamp(x / w * 100, 0, 100);
-    cpState.v = cpClamp(100 - y / h * 100, 0, 100);
-    cpSync(); cpApply();
+    cpState.s = cpClamp((x / w) * 100, 0, 100);
+    cpState.v = cpClamp(100 - (y / h) * 100, 0, 100);
+    cpSync();
+    cpApply();
   });
 
   // Hue slider
   cpDrag(document.getElementById("cp-hue-track")!, (x, _y, w) => {
     if (!cpState) return;
-    cpState.h = cpClamp(x / w * 360, 0, 360);
-    cpSync(); cpApply();
+    cpState.h = cpClamp((x / w) * 360, 0, 360);
+    cpSync();
+    cpApply();
   });
 
   // Alpha slider
   cpDrag(document.getElementById("cp-alpha-track")!, (x, _y, w) => {
     if (!cpState) return;
-    cpState.a = cpClamp(x / w * 100, 0, 100);
-    cpSync(); cpApply();
+    cpState.a = cpClamp((x / w) * 100, 0, 100);
+    cpSync();
+    cpApply();
   });
 
   // Mode cycle: HEX → RGB → HSL → HEX
@@ -2439,51 +2708,97 @@ function cpBindEvents(): void {
   });
 
   // Hex input
-  (document.getElementById("cp-hex") as HTMLInputElement).addEventListener("input", function() {
-    if (!cpState) return;
-    const rgb = hexToRgb(this.value);
-    if (rgb) {
-      [cpState.h, cpState.s, cpState.v] = rgbToHsv(...rgb);
-      // Also parse alpha from 8-digit hex
-      const h = this.value.replace(/^#/, "");
-      if (h.length === 8) cpState.a = parseInt(h.slice(6), 16) / 255 * 100;
-      cpSync(); cpApply();
-    }
-  });
+  (document.getElementById("cp-hex") as HTMLInputElement).addEventListener(
+    "input",
+    function () {
+      if (!cpState) return;
+      const rgb = hexToRgb(this.value);
+      if (rgb) {
+        [cpState.h, cpState.s, cpState.v] = rgbToHsv(...rgb);
+        // Also parse alpha from 8-digit hex
+        const h = this.value.replace(/^#/, "");
+        if (h.length === 8) cpState.a = (parseInt(h.slice(6), 16) / 255) * 100;
+        cpSync();
+        cpApply();
+      }
+    },
+  );
 
   // RGB inputs
   const syncRgb = () => {
     if (!cpState) return;
-    const r = cpClamp(parseInt((document.getElementById("cp-r") as HTMLInputElement).value)||0, 0, 255);
-    const g = cpClamp(parseInt((document.getElementById("cp-g") as HTMLInputElement).value)||0, 0, 255);
-    const b = cpClamp(parseInt((document.getElementById("cp-b") as HTMLInputElement).value)||0, 0, 255);
+    const r = cpClamp(
+      parseInt((document.getElementById("cp-r") as HTMLInputElement).value) ||
+        0,
+      0,
+      255,
+    );
+    const g = cpClamp(
+      parseInt((document.getElementById("cp-g") as HTMLInputElement).value) ||
+        0,
+      0,
+      255,
+    );
+    const b = cpClamp(
+      parseInt((document.getElementById("cp-b") as HTMLInputElement).value) ||
+        0,
+      0,
+      255,
+    );
     [cpState.h, cpState.s, cpState.v] = rgbToHsv(r, g, b);
-    cpSync(); cpApply();
+    cpSync();
+    cpApply();
   };
-  ["cp-r","cp-g","cp-b"].forEach(id =>
-    (document.getElementById(id) as HTMLInputElement).addEventListener("input", syncRgb)
+  ["cp-r", "cp-g", "cp-b"].forEach((id) =>
+    (document.getElementById(id) as HTMLInputElement).addEventListener(
+      "input",
+      syncRgb,
+    ),
   );
 
   // HSL inputs
   const syncHsl = () => {
     if (!cpState) return;
-    const hh = cpClamp(parseInt((document.getElementById("cp-hl") as HTMLInputElement).value)||0, 0, 360);
-    const ss = cpClamp(parseInt((document.getElementById("cp-sl") as HTMLInputElement).value)||0, 0, 100);
-    const ll = cpClamp(parseInt((document.getElementById("cp-ll") as HTMLInputElement).value)||0, 0, 100);
+    const hh = cpClamp(
+      parseInt((document.getElementById("cp-hl") as HTMLInputElement).value) ||
+        0,
+      0,
+      360,
+    );
+    const ss = cpClamp(
+      parseInt((document.getElementById("cp-sl") as HTMLInputElement).value) ||
+        0,
+      0,
+      100,
+    );
+    const ll = cpClamp(
+      parseInt((document.getElementById("cp-ll") as HTMLInputElement).value) ||
+        0,
+      0,
+      100,
+    );
     const [r, g, b] = hslToRgb(hh, ss, ll);
     [cpState.h, cpState.s, cpState.v] = rgbToHsv(r, g, b);
-    cpSync(); cpApply();
+    cpSync();
+    cpApply();
   };
-  ["cp-hl","cp-sl","cp-ll"].forEach(id =>
-    (document.getElementById(id) as HTMLInputElement).addEventListener("input", syncHsl)
+  ["cp-hl", "cp-sl", "cp-ll"].forEach((id) =>
+    (document.getElementById(id) as HTMLInputElement).addEventListener(
+      "input",
+      syncHsl,
+    ),
   );
 
   // Alpha input
-  (document.getElementById("cp-al") as HTMLInputElement).addEventListener("input", function() {
-    if (!cpState) return;
-    cpState.a = cpClamp(parseInt(this.value)||0, 0, 100);
-    cpSync(); cpApply();
-  });
+  (document.getElementById("cp-al") as HTMLInputElement).addEventListener(
+    "input",
+    function () {
+      if (!cpState) return;
+      cpState.a = cpClamp(parseInt(this.value) || 0, 0, 100);
+      cpSync();
+      cpApply();
+    },
+  );
 }
 
 // ── Sync visuals from state ───────────────────────────────────────────
@@ -2501,17 +2816,21 @@ function cpSync(): void {
 
   // SV cursor
   const cur = document.getElementById("cp-sv-cursor") as HTMLElement;
-  cur.style.left        = `${s}%`;
-  cur.style.top         = `${100 - v}%`;
+  cur.style.left = `${s}%`;
+  cur.style.top = `${100 - v}%`;
   cur.style.borderColor = v > 45 ? "rgba(0,0,0,0.45)" : "rgba(255,255,255,0.8)";
 
   // Hue thumb
-  (document.getElementById("cp-hue-thumb") as HTMLElement).style.left = `${h / 360 * 100}%`;
+  (document.getElementById("cp-hue-thumb") as HTMLElement).style.left =
+    `${(h / 360) * 100}%`;
 
   // Alpha gradient overlay + thumb
-  (document.getElementById("cp-alpha-gradient") as HTMLElement).style.background =
+  (
+    document.getElementById("cp-alpha-gradient") as HTMLElement
+  ).style.background =
     `linear-gradient(to right, rgba(${r},${g},${b},0), rgb(${r},${g},${b}))`;
-  (document.getElementById("cp-alpha-thumb") as HTMLElement).style.left = `${a}%`;
+  (document.getElementById("cp-alpha-thumb") as HTMLElement).style.left =
+    `${a}%`;
 
   cpSyncInputs();
 }
@@ -2525,21 +2844,31 @@ function cpSyncInputs(): void {
     if (inp && document.activeElement !== inp) inp.value = val;
   };
   setIdle("cp-hex", rgbToHex(r, g, b));
-  setIdle("cp-r",   String(r));
-  setIdle("cp-g",   String(g));
-  setIdle("cp-b",   String(b));
-  setIdle("cp-hl",  String(hl));
-  setIdle("cp-sl",  String(sl));
-  setIdle("cp-ll",  String(ll));
-  setIdle("cp-al",  String(Math.round(cpState.a)));
+  setIdle("cp-r", String(r));
+  setIdle("cp-g", String(g));
+  setIdle("cp-b", String(b));
+  setIdle("cp-hl", String(hl));
+  setIdle("cp-sl", String(sl));
+  setIdle("cp-ll", String(ll));
+  setIdle("cp-al", String(Math.round(cpState.a)));
 }
 
 function cpSyncMode(): void {
   if (!cpState) return;
-  (document.getElementById("cp-mode-btn") as HTMLElement).textContent = cpState.mode.toUpperCase();
-  (document.getElementById("cp-fields-hex") as HTMLElement).classList.toggle("cp-hidden", cpState.mode !== "hex");
-  (document.getElementById("cp-fields-rgb") as HTMLElement).classList.toggle("cp-hidden", cpState.mode !== "rgb");
-  (document.getElementById("cp-fields-hsl") as HTMLElement).classList.toggle("cp-hidden", cpState.mode !== "hsl");
+  (document.getElementById("cp-mode-btn") as HTMLElement).textContent =
+    cpState.mode.toUpperCase();
+  (document.getElementById("cp-fields-hex") as HTMLElement).classList.toggle(
+    "cp-hidden",
+    cpState.mode !== "hex",
+  );
+  (document.getElementById("cp-fields-rgb") as HTMLElement).classList.toggle(
+    "cp-hidden",
+    cpState.mode !== "rgb",
+  );
+  (document.getElementById("cp-fields-hsl") as HTMLElement).classList.toggle(
+    "cp-hidden",
+    cpState.mode !== "hsl",
+  );
 }
 
 // ── Write colour back to modal input + swatch ─────────────────────────
@@ -2547,9 +2876,10 @@ function cpSyncMode(): void {
 function cpApply(): void {
   if (!cpState) return;
   const [r, g, b] = hsvToRgb(cpState.h, cpState.s, cpState.v);
-  const value = cpState.a < 100
-    ? `rgba(${r}, ${g}, ${b}, ${(cpState.a / 100).toFixed(2)})`
-    : rgbToHex(r, g, b);
+  const value =
+    cpState.a < 100
+      ? `rgba(${r}, ${g}, ${b}, ${(cpState.a / 100).toFixed(2)})`
+      : rgbToHex(r, g, b);
   const inp = document.getElementById(cpState.inputId) as HTMLInputElement;
   const swt = document.getElementById(cpState.swatchId) as HTMLElement;
   if (inp) inp.value = value;
@@ -2562,9 +2892,11 @@ function cpOutsideClick(e: MouseEvent): void {
   const pop = document.getElementById("cp-popover");
   if (!pop || !cpState) return;
   const t = e.target as Node;
-  if (!pop.contains(t) &&
-      !document.getElementById(cpState.inputId)?.contains(t) &&
-      !document.getElementById(cpState.swatchId)?.contains(t)) {
+  if (
+    !pop.contains(t) &&
+    !document.getElementById(cpState.inputId)?.contains(t) &&
+    !document.getElementById(cpState.swatchId)?.contains(t)
+  ) {
     closeCp();
   }
 }
@@ -2578,7 +2910,10 @@ function closeCp(): void {
 function openColorPicker(inputId: string, swatchId: string): void {
   const inp = document.getElementById(inputId) as HTMLInputElement;
   const parsed = inp ? parseCssColor(inp.value) : null;
-  let h = 0, s = 0, v = 0, a = 100;
+  let h = 0,
+    s = 0,
+    v = 0,
+    a = 100;
   if (parsed) {
     [h, s, v] = rgbToHsv(parsed[0], parsed[1], parsed[2]);
     a = Math.round(parsed[3] * 100);
@@ -2596,13 +2931,16 @@ function openColorPicker(inputId: string, swatchId: string): void {
     const rect = ref.getBoundingClientRect();
     const PW = 240;
     pop.style.width = `${PW}px`;
-    pop.style.top   = `${rect.bottom + 6}px`;
-    pop.style.left  = `${Math.min(rect.left, window.innerWidth - PW - 8)}px`;
+    pop.style.top = `${rect.bottom + 6}px`;
+    pop.style.left = `${Math.min(rect.left, window.innerWidth - PW - 8)}px`;
   }
 
   cpSyncMode();
   cpSync();
-  setTimeout(() => document.addEventListener("mousedown", cpOutsideClick, true), 0);
+  setTimeout(
+    () => document.addEventListener("mousedown", cpOutsideClick, true),
+    0,
+  );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -2655,28 +2993,39 @@ function buildValueSection(type: string, existingValue = ""): string {
   return simpleValueFieldHtml(type, existingValue);
 }
 
-function showNewTokenModal(initialType = "color"): void {
+function showNewTokenModal(
+  initialType = "color",
+  opts?: { name?: string; targetSetId?: string },
+): void {
+  const locked = opts?.name != null;
+  const targetSetId = opts?.targetSetId;
   const typeOptions = TOKEN_TYPES.map(
-    (t) => `<option value="${t.value}"${t.value === initialType ? " selected" : ""}>${t.label}</option>`
+    (t) =>
+      `<option value="${t.value}"${t.value === initialType ? " selected" : ""}>${t.label}</option>`,
   ).join("");
+
+  const setLabel = targetSetId
+    ? state.sets.find((s) => s.id === targetSetId)?.name
+    : undefined;
 
   showModal(`
     <div class="modal-header">
       <h2 class="modal-title" id="token-modal-title">
-        CREATE NEW ${getTypeDef(initialType).label.toUpperCase()} TOKEN
+        CREATE NEW ${getTypeDef(initialType).label.toUpperCase()} TOKEN${setLabel ? ` IN ${setLabel.toUpperCase()}` : ""}
       </h2>
       ${CLOSE_BTN_SVG}
     </div>
     <div class="modal-body">
-      <div class="form-field">
+      <div class="form-field${locked ? " hidden" : ""}">
         <label class="form-label" for="token-type-select">Type</label>
         <select class="select form-input" id="token-type-select">${typeOptions}</select>
       </div>
       <div class="form-field">
         <label class="form-label" for="token-name-input">Name</label>
         <input type="text" class="input form-input" id="token-name-input"
+               value="${esc(opts?.name ?? "")}"
                placeholder="Enter ${getTypeDef(initialType).label.toLowerCase()} token name"
-               autocomplete="off" />
+               autocomplete="off" ${locked ? "readonly" : ""} />
       </div>
       <div id="token-value-section">${buildValueSection(initialType)}</div>
       <div class="form-field">
@@ -2700,39 +3049,48 @@ function showNewTokenModal(initialType = "color"): void {
 
   // Update fields when type changes
   const typeSelect = el<HTMLSelectElement>("token-type-select");
-  typeSelect.addEventListener("change", () => {
-    const newType = typeSelect.value;
-    closeModalAliasPicker();
-    closeFontPicker();
-    el("token-modal-title").textContent =
-      `CREATE NEW ${getTypeDef(newType).label.toUpperCase()} TOKEN`;
-    const nameInput = el<HTMLInputElement>("token-name-input");
-    if (nameInput) nameInput.placeholder = `Enter ${getTypeDef(newType).label.toLowerCase()} token name`;
-    el("token-value-section").innerHTML = buildValueSection(newType);
-    if (newType === "color") bindColorSwatchPreview();
-    if (newType === "shadow") bindShadowColorPicker();
-    bindValueAliasTrigger();
-    bindCompositePropAliasTriggers();
-    bindFontPicker();
-  });
+  if (!locked) {
+    typeSelect.addEventListener("change", () => {
+      const newType = typeSelect.value;
+      closeModalAliasPicker();
+      closeFontPicker();
+      el("token-modal-title").textContent =
+        `CREATE NEW ${getTypeDef(newType).label.toUpperCase()} TOKEN${setLabel ? ` IN ${setLabel.toUpperCase()}` : ""}`;
+      const nameInput = el<HTMLInputElement>("token-name-input");
+      if (nameInput)
+        nameInput.placeholder = `Enter ${getTypeDef(newType).label.toLowerCase()} token name`;
+      el("token-value-section").innerHTML = buildValueSection(newType);
+      if (newType === "color") bindColorSwatchPreview();
+      if (newType === "shadow") bindShadowColorPicker();
+      bindValueAliasTrigger();
+      bindCompositePropAliasTriggers();
+      bindFontPicker();
+    });
+  }
+
+  const effectiveSetId = targetSetId ?? state.selectedSetId;
 
   // Save
   el("confirm-create-token-btn").addEventListener("click", () => {
     const name = el<HTMLInputElement>("token-name-input")?.value?.trim();
     const type = typeSelect.value;
-    const description = el<HTMLInputElement>("token-description-input")?.value?.trim() ?? "";
+    const description =
+      el<HTMLInputElement>("token-description-input")?.value?.trim() ?? "";
     const value = readTokenValue(type);
 
-    if (!name) { el<HTMLInputElement>("token-name-input").classList.add("error"); return; }
+    if (!name) {
+      el<HTMLInputElement>("token-name-input").classList.add("error");
+      return;
+    }
     if (!value && type !== "shadow" && type !== "typography") {
       el<HTMLInputElement>("token-value-input")?.classList.add("error");
       return;
     }
 
-    if (state.selectedSetId) {
+    if (effectiveSetId) {
       sendToPlugin({
         type: "create-token",
-        setId: state.selectedSetId,
+        setId: effectiveSetId,
         tokenType: type,
         name,
         value,
@@ -2767,49 +3125,87 @@ function typographyInspectorHtml(
     pretty: string;
     normStr: string;
   } {
-    const empty = { kind: "empty", rawKeys: [] as string[], transitKeys: [] as string[],
-                    familyCandidates: [] as string[], chosenFamily: undefined,
-                    pretty: "(empty)", normStr: "{}" };
+    const empty = {
+      kind: "empty",
+      rawKeys: [] as string[],
+      transitKeys: [] as string[],
+      familyCandidates: [] as string[],
+      chosenFamily: undefined,
+      pretty: "(empty)",
+      normStr: "{}",
+    };
     if (raw == null || raw === "") return empty;
 
     // Step 1: raw JSON parse — shows the wire shape ($meta$, $cnt$, $arr$, …)
     let parsed: unknown = null;
-    try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      /* not JSON */
+    }
     const rawKeys =
       typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-        ? Object.keys(parsed as object) : [];
+        ? Object.keys(parsed as object)
+        : [];
 
     // Step 2: transit-flatten — shows the semantic keys (font-size, font-family, …)
     let transitObj: unknown = null;
-    try { transitObj = transitToPlain(parsed); } catch { /* keep null */ }
+    try {
+      transitObj = transitToPlain(parsed);
+    } catch {
+      /* keep null */
+    }
     const transitKeys =
-      typeof transitObj === "object" && transitObj !== null && !Array.isArray(transitObj)
-        ? Object.keys(transitObj as object) : [];
+      typeof transitObj === "object" &&
+      transitObj !== null &&
+      !Array.isArray(transitObj)
+        ? Object.keys(transitObj as object)
+        : [];
 
     // Step 3: run collectStringsDeep on the raw font-family value and pick best
     let familyCandidates: string[] = [];
     let chosenFamily: string | undefined;
     try {
-      if (typeof transitObj === "object" && transitObj !== null && !Array.isArray(transitObj)) {
+      if (
+        typeof transitObj === "object" &&
+        transitObj !== null &&
+        !Array.isArray(transitObj)
+      ) {
         const m = transitObj as Record<string, unknown>;
         const rawFam = m["font-family"] ?? m.fontFamilies ?? m.fontFamily;
         collectStringsDeep(rawFam, familyCandidates, 0, 8);
-        if (familyCandidates.length > 20) familyCandidates = familyCandidates.slice(0, 20);
+        if (familyCandidates.length > 20)
+          familyCandidates = familyCandidates.slice(0, 20);
         chosenFamily = extractFontFamilyBestEffort(rawFam);
       }
-    } catch { /* keep defaults */ }
+    } catch {
+      /* keep defaults */
+    }
 
     // Pretty-print raw structure (truncated)
     let pretty: string;
-    try { pretty = JSON.stringify(parsed, null, 2) ?? raw; } catch { pretty = raw; }
+    try {
+      pretty = JSON.stringify(parsed, null, 2) ?? raw;
+    } catch {
+      pretty = raw;
+    }
     if (pretty.length > 800) pretty = pretty.slice(0, 800) + "\n…(truncated)";
 
     let normStr: string;
-    try { normStr = JSON.stringify(normalizeTypographyValueToForm(raw), null, 2); } catch { normStr = "(error)"; }
+    try {
+      normStr = JSON.stringify(normalizeTypographyValueToForm(raw), null, 2);
+    } catch {
+      normStr = "(error)";
+    }
 
     return {
       kind: typeof parsed === "object" && parsed !== null ? "object" : "string",
-      rawKeys, transitKeys, familyCandidates, chosenFamily, pretty, normStr,
+      rawKeys,
+      transitKeys,
+      familyCandidates,
+      chosenFamily,
+      pretty,
+      normStr,
     };
   }
 
@@ -2831,9 +3227,12 @@ function typographyInspectorHtml(
       ${row("kind", info.kind)}
       ${row("raw keys", "[" + info.rawKeys.join(", ") + "]")}
       ${row("transit keys", "[" + info.transitKeys.join(", ") + "]")}
-      ${row("candidates[]", info.familyCandidates.length
+      ${row(
+        "candidates[]",
+        info.familyCandidates.length
           ? "[" + info.familyCandidates.map(esc).join(", ") + "]"
-          : "(none found)")}
+          : "(none found)",
+      )}
       ${row("chosen fam.", info.chosenFamily !== undefined ? esc(info.chosenFamily) : "(none)")}
       <pre class="dtm-ipre">${esc(info.pretty)}</pre>
       <div class="dtm-isect-title">→ normalizeTypographyValueToForm(…)</div>
@@ -2869,35 +3268,61 @@ function shadowInspectorHtml(
     normStr: string;
   } {
     const empty = {
-      kind: "empty", rawKeys: [] as string[], transitKeys: [] as string[],
-      pretty: "(empty)", normStr: "{}",
+      kind: "empty",
+      rawKeys: [] as string[],
+      transitKeys: [] as string[],
+      pretty: "(empty)",
+      normStr: "{}",
     };
     if (raw == null || raw === "") return empty;
 
     // Step 1: raw JSON parse — shows wire shape ($meta$, $cnt$, $arr$, …)
     let parsed: unknown = null;
-    try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      /* not JSON */
+    }
     const rawKeys =
       typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-        ? Object.keys(parsed as object) : [];
+        ? Object.keys(parsed as object)
+        : [];
 
     // Step 2: transit-flatten — shows semantic keys (x, y, blur, …)
     let transitObj: unknown = null;
-    try { transitObj = transitToPlain(parsed); } catch { /* keep null */ }
+    try {
+      transitObj = transitToPlain(parsed);
+    } catch {
+      /* keep null */
+    }
     const transitKeys =
-      typeof transitObj === "object" && transitObj !== null && !Array.isArray(transitObj)
-        ? Object.keys(transitObj as object) : [];
+      typeof transitObj === "object" &&
+      transitObj !== null &&
+      !Array.isArray(transitObj)
+        ? Object.keys(transitObj as object)
+        : [];
 
     let pretty: string;
-    try { pretty = JSON.stringify(parsed, null, 2) ?? raw; } catch { pretty = raw; }
+    try {
+      pretty = JSON.stringify(parsed, null, 2) ?? raw;
+    } catch {
+      pretty = raw;
+    }
     if (pretty.length > 800) pretty = pretty.slice(0, 800) + "\n…(truncated)";
 
     let normStr: string;
-    try { normStr = JSON.stringify(normalizeShadowValueToPreview(raw), null, 2); } catch { normStr = "(error)"; }
+    try {
+      normStr = JSON.stringify(normalizeShadowValueToPreview(raw), null, 2);
+    } catch {
+      normStr = "(error)";
+    }
 
     return {
       kind: typeof parsed === "object" && parsed !== null ? "object" : "string",
-      rawKeys, transitKeys, pretty, normStr,
+      rawKeys,
+      transitKeys,
+      pretty,
+      normStr,
     };
   }
 
@@ -2939,19 +3364,35 @@ function buildEditValueSection(token: SerializedToken): string {
     const normalized = normalizeShadowValueToPreview(token.value);
 
     if (import.meta.env.DEV) {
-      console.debug("[DTM-B] shadow edit modal  name='" + token.name + "'",
-        "\n  raw token.value :", token.value,
-        "\n  normalized form :", normalized);
+      console.debug(
+        "[DTM-B] shadow edit modal  name='" + token.name + "'",
+        "\n  raw token.value :",
+        token.value,
+        "\n  normalized form :",
+        normalized,
+      );
     }
 
     const inspectorEnabled = ((): boolean => {
-      try { return localStorage.getItem("dtm-inspector") !== "0"; } catch { return true; }
+      try {
+        return localStorage.getItem("dtm-inspector") !== "0";
+      } catch {
+        return true;
+      }
     })();
-    const inspector = inspectorEnabled ? shadowInspectorHtml(token, normalized) : "";
-    return shadowFieldsHtml(
-      normalized.x, normalized.y, normalized.blur,
-      normalized.spread, normalized.color, normalized.type,
-    ) + inspector;
+    const inspector = inspectorEnabled
+      ? shadowInspectorHtml(token, normalized)
+      : "";
+    return (
+      shadowFieldsHtml(
+        normalized.x,
+        normalized.y,
+        normalized.blur,
+        normalized.spread,
+        normalized.color,
+        normalized.type,
+      ) + inspector
+    );
   }
   if (token.type === "typography") {
     const normalized = normalizeTypographyValueToForm(token.value);
@@ -2962,9 +3403,13 @@ function buildEditValueSection(token: SerializedToken): string {
     // DevTools console (same place as log-A) — the plugin iframe's own console
     // is only visible after switching the DevTools context selector.
     if (import.meta.env.DEV) {
-      console.debug("[DTM-B] edit modal  name='" + token.name + "'",
-        "\n  raw token.value :", token.value,
-        "\n  normalized form :", normalized);
+      console.debug(
+        "[DTM-B] edit modal  name='" + token.name + "'",
+        "\n  raw token.value :",
+        token.value,
+        "\n  normalized form :",
+        normalized,
+      );
 
       // Relay to plugin sandbox console (appears in Penpot's DevTools console)
       sendToPlugin({
@@ -2980,15 +3425,25 @@ function buildEditValueSection(token: SerializedToken): string {
     // To hide:  localStorage.setItem("dtm-inspector", "0")  (from the iframe console)
     // To show:  localStorage.setItem("dtm-inspector", "1")
     const inspectorEnabled = ((): boolean => {
-      try { return localStorage.getItem("dtm-inspector") !== "0"; } catch { return true; }
+      try {
+        return localStorage.getItem("dtm-inspector") !== "0";
+      } catch {
+        return true;
+      }
     })();
-    const inspector = inspectorEnabled ? typographyInspectorHtml(token, normalized) : "";
+    const inspector = inspectorEnabled
+      ? typographyInspectorHtml(token, normalized)
+      : "";
     return typographyFieldsHtml(normalized) + inspector;
   }
   return simpleValueFieldHtml(token.type, token.value);
 }
 
-function showEditTokenModal(token: SerializedToken): void {
+function showEditTokenModal(
+  token: SerializedToken,
+  targetSetId?: string,
+): void {
+  const effectiveSetId = targetSetId ?? state.selectedSetId;
   showModal(`
     <div class="modal-header">
       <h2 class="modal-title">EDIT ${getTypeDef(token.type).label.toUpperCase()} TOKEN</h2>
@@ -3022,14 +3477,15 @@ function showEditTokenModal(token: SerializedToken): void {
 
   el("confirm-edit-token-btn").addEventListener("click", () => {
     const name = el<HTMLInputElement>("edit-token-name")?.value?.trim();
-    const description = el<HTMLInputElement>("edit-token-description")?.value?.trim() ?? "";
+    const description =
+      el<HTMLInputElement>("edit-token-description")?.value?.trim() ?? "";
     const value = readTokenValue(token.type);
 
     if (!name) return;
-    if (state.selectedSetId) {
+    if (effectiveSetId) {
       sendToPlugin({
         type: "update-token",
-        setId: state.selectedSetId,
+        setId: effectiveSetId,
         tokenId: token.id,
         name,
         value,
@@ -3075,13 +3531,13 @@ function bindBulkBar(): void {
     <button class="icon-btn bulk-danger-btn" id="bulk-delete-btn" title="Delete selected">${ICON_DELETE}</button>`;
 
   el("bulk-move-btn").addEventListener("click", () =>
-    handleBulkMove(new Set(selectedTokenIds))
+    handleBulkMove(new Set(selectedTokenIds)),
   );
   el("bulk-duplicate-btn").addEventListener("click", () =>
-    handleBulkDuplicate(new Set(selectedTokenIds))
+    handleBulkDuplicate(new Set(selectedTokenIds)),
   );
   el("bulk-delete-btn").addEventListener("click", () =>
-    handleBulkDelete(new Set(selectedTokenIds))
+    handleBulkDelete(new Set(selectedTokenIds)),
   );
 }
 
@@ -3122,7 +3578,7 @@ function handleBulkMove(ids: Set<string>): void {
     const copy = el<HTMLInputElement>("bulk-move-copy").checked;
     if (!toSetId) return;
     ids.forEach((tokenId) =>
-      sendToPlugin({ type: "move-token", fromSetId, tokenId, toSetId, copy })
+      sendToPlugin({ type: "move-token", fromSetId, tokenId, toSetId, copy }),
     );
     selectedTokenIds.clear();
     closeModal();
@@ -3164,7 +3620,9 @@ function handleBulkDelete(ids: Set<string>): void {
     </div>`);
 
   el("confirm-bulk-delete-btn").addEventListener("click", () => {
-    ids.forEach((tokenId) => sendToPlugin({ type: "delete-token", setId, tokenId }));
+    ids.forEach((tokenId) =>
+      sendToPlugin({ type: "delete-token", setId, tokenId }),
+    );
     selectedTokenIds.clear();
     closeModal();
   });
@@ -3289,34 +3747,37 @@ function showMathInfoModal(): void {
 //  addComparedSet(setId)    – appends a compared column; requests tokens from plugin.
 //  removeComparedSet(setId) – removes a compared column.
 //  renderCompareTable()     – full render of compare header + body.
-//  valueCellHtmlReadOnly()  – non-interactive variant of valueCellHtml (no alias editor).
+//  valueCellHtmlForCompare() – value cell with interactive alias chips for comparison columns.
 //  showAddSetDropdown()     – shows a context-menu picker of addable sets.
 // ════════════════════════════════════════════════════════════════════════
 
-/** Non-interactive value cell — used in comparison columns so no alias editor opens. */
-function valueCellHtmlReadOnly(token: SerializedToken): string {
+/** Value cell for comparison columns — includes alias chips with data attrs for click handling. */
+function valueCellHtmlForCompare(token: SerializedToken, setId: string): string {
   if (token.type === "typography") {
-    // Pass no tokenId → compositeSubValueHtml renders non-interactive chips
-    return compositeTypographyPreviewHtml(normalizeTypographyValueToForm(token.value));
+    return compositeTypographyPreviewHtml(
+      normalizeTypographyValueToForm(token.value),
+    );
   }
   if (token.type === "shadow") {
-    return compositeShadowPreviewHtml(normalizeShadowValueToPreview(token.value));
+    return compositeShadowPreviewHtml(
+      normalizeShadowValueToPreview(token.value),
+    );
   }
   if (isAlias(token.value)) {
     const aliasName = token.value.trim().slice(1, -1);
-    const resolvedBg = token.type === "color" ? (token.resolvedValue ?? "") : "";
+    const resolvedBg =
+      token.type === "color" ? (token.resolvedValue ?? "") : "";
     const swatchHtml = resolvedBg
       ? `<span class="color-swatch" style="background:${esc(resolvedBg)}" aria-hidden="true"></span>`
       : "";
-    return `<span class="alias-chip" title="${esc(token.value)}">${swatchHtml}<span class="alias-chip-name">${esc(aliasName)}</span></span>`;
+    return `<div class="alias-chip cmp-alias-chip" data-cmp-chip-token="${esc(token.name)}" data-cmp-chip-set="${esc(setId)}" title="${esc(token.value)}" role="button" tabindex="0">${swatchHtml}<span class="alias-chip-name">${esc(aliasName)}</span>${ALIAS_GEAR_ICON}</div>`;
   }
   if (!/\{[^{}]+\}/.test(token.value)) {
     return `${colorSwatchHtml(token)}<span class="token-value-text" title="${esc(token.value)}">${esc(token.value)}</span>`;
   }
-  // Mixed value — render alias refs as mini (non-interactive) chips
   const parts = parseMixedValue(token.value).map((seg) => {
     if (seg.kind === "alias") {
-      return `<span class="alias-chip" title="{${esc(seg.name)}}"><span class="alias-chip-name">${esc(seg.name)}</span></span>`;
+      return `<div class="alias-chip alias-chip--inline cmp-alias-chip" data-cmp-chip-token="${esc(token.name)}" data-cmp-chip-set="${esc(setId)}" title="{${esc(seg.name)}}" role="button" tabindex="0"><span class="alias-chip-name">${esc(seg.name)}</span>${ALIAS_GEAR_ICON}</div>`;
     }
     return `<span class="mixed-value-text">${esc(seg.content)}</span>`;
   });
@@ -3327,27 +3788,58 @@ function valueCellHtmlReadOnly(token: SerializedToken): string {
 function renderCompareTable(): void {
   if (!compareState.active) return;
   const headerEl = el("compare-table-header");
-  const bodyEl   = el("compare-table-body");
-  const wrapEl   = el("compare-table-wrap");
+  const bodyEl = el("compare-table-body");
+  const wrapEl = el("compare-table-wrap");
   if (!headerEl || !bodyEl || !wrapEl) return;
 
-  const N = compareState.comparedSetIds.length;
-  // Grid: [170px name] [minmax(120px,1fr) primary] [same × N compared] [110px add-set]
-  const colTemplate = `170px repeat(${1 + N}, minmax(120px, 1fr)) 110px`;
-  wrapEl.style.setProperty("--cmp-col-template", colTemplate);
+  const CMP_COL_DEFAULT = 180;
+  const CMP_COL_MIN = 100;
+
+  const allSetIds = [
+    compareState.primarySetId!,
+    ...compareState.comparedSetIds,
+  ];
+  const getSetW = (id: string) =>
+    compareState.setColWidths.get(id) ?? CMP_COL_DEFAULT;
+
+  const buildCmpTemplate = () =>
+    `${compareState.nameColWidth}px ${allSetIds.map((id) => `${getSetW(id)}px`).join(" ")} 110px`;
+
+  wrapEl.style.setProperty("--cmp-col-template", buildCmpTemplate());
 
   // ── Header ──────────────────────────────────────────────────────────────
-  const otherSets   = state.sets.filter(
-    (s) => s.id !== compareState.primarySetId && !compareState.comparedSetIds.includes(s.id)
+  const otherSets = state.sets.filter(
+    (s) =>
+      s.id !== compareState.primarySetId &&
+      !compareState.comparedSetIds.includes(s.id),
   );
   const addDisabled = otherSets.length === 0;
-  const addTitle    = addDisabled ? "No other sets available" : "Add a set to compare";
+  const addTitle = addDisabled
+    ? "No other sets available"
+    : "Add a set to compare";
+
+  const sortChevron = (colId: string) => {
+    const active = compareState.sortCol === colId;
+    const desc = active && compareState.sortDir === "desc";
+    return `<span class="sort-icon${active ? " is-active" : ""}${desc ? " is-desc" : ""}" aria-hidden="true">
+      <svg width="10" height="7" viewBox="0 0 10 7" fill="none">
+        <path d="M1 1.5 5 5.5 9 1.5" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </span>`;
+  };
+
+  const primarySetName =
+    state.sets.find((s) => s.id === compareState.primarySetId)?.name ??
+    "primary";
 
   const comparedHeaders = compareState.comparedSetIds
     .map((setId) => {
       const setName = state.sets.find((s) => s.id === setId)?.name ?? setId;
-      return `<div class="cmp-th cmp-th-compared" data-compare-set-id="${esc(setId)}">
-        <span class="th-label">${esc(`Value (${setName})`)}</span>
+      return `<div class="cmp-th cmp-th-compared th-sortable" data-compare-set-id="${esc(setId)}"
+                   data-cmp-sort-col="${esc(setId)}" title="Sort by ${esc(setName)} value">
+        <span class="th-label">${esc(setName)}</span>
+        ${sortChevron(setId)}
         <button class="cmp-col-remove-btn icon-btn" data-remove-set-id="${esc(setId)}"
                 title="Remove ${esc(setName)}" aria-label="Remove ${esc(setName)}">
           <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -3355,14 +3847,22 @@ function renderCompareTable(): void {
                   stroke-linecap="round"/>
           </svg>
         </button>
+        <div class="col-resize-handle cmp-set-resize" data-resize-set="${esc(setId)}" aria-hidden="true"></div>
       </div>`;
     })
     .join("");
 
   headerEl.innerHTML = `
-    <div class="cmp-th cmp-th-name body-s">Name</div>
-    <div class="cmp-th cmp-th-primary body-s">
-      <span class="th-label">Value</span>
+    <div class="cmp-th cmp-th-name body-s th-sortable" data-cmp-sort-col="name" title="Sort by name">
+      <span class="th-label">Name</span>
+      ${sortChevron("name")}
+      <div class="col-resize-handle cmp-name-resize" aria-hidden="true"></div>
+    </div>
+    <div class="cmp-th cmp-th-primary body-s th-sortable" data-cmp-sort-col="${esc(compareState.primarySetId!)}"
+         title="Sort by ${esc(primarySetName)} value">
+      <span class="th-label">${esc(primarySetName)}</span>
+      ${sortChevron(compareState.primarySetId!)}
+      <div class="col-resize-handle cmp-set-resize" data-resize-set="${esc(compareState.primarySetId!)}" aria-hidden="true"></div>
     </div>
     ${comparedHeaders}
     <div class="cmp-th cmp-th-add">
@@ -3370,52 +3870,210 @@ function renderCompareTable(): void {
               ${addDisabled ? "disabled" : ""} title="${esc(addTitle)}">+ Add set</button>
     </div>`;
 
-  // Wire remove buttons
-  headerEl.querySelectorAll<HTMLElement>("[data-remove-set-id]").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      removeComparedSet(btn.dataset.removeSetId!);
+  // Wire sortable headers
+  headerEl
+    .querySelectorAll<HTMLElement>("[data-cmp-sort-col]")
+    .forEach((th) => {
+      th.addEventListener("click", (e) => {
+        if (
+          (e.target as HTMLElement).closest(
+            "[data-remove-set-id],.col-resize-handle",
+          )
+        )
+          return;
+        const col = th.dataset.cmpSortCol!;
+        if (compareState.sortCol === col) {
+          if (compareState.sortDir === "asc") {
+            compareState.sortDir = "desc";
+          } else {
+            compareState.sortCol = null;
+            compareState.sortDir = "asc";
+          }
+        } else {
+          compareState.sortCol = col;
+          compareState.sortDir = "asc";
+        }
+        renderCompareTable();
+      });
     });
-  });
+
+  // Wire remove buttons
+  headerEl
+    .querySelectorAll<HTMLElement>("[data-remove-set-id]")
+    .forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        removeComparedSet(btn.dataset.removeSetId!);
+      });
+    });
 
   // Wire add-set button
   const addBtn = el("cmp-add-set-btn");
   if (addBtn && !addDisabled) {
-    addBtn.addEventListener("click", (e) => showAddSetDropdown(e as MouseEvent));
+    addBtn.addEventListener("click", (e) =>
+      showAddSetDropdown(e as MouseEvent),
+    );
   }
 
-  // ── Body ────────────────────────────────────────────────────────────────
-  const primaryTokens = getSortedTokens(state.tokens);
+  // Wire name column resize handle
+  const nameHandle = headerEl.querySelector<HTMLElement>(".cmp-name-resize");
+  if (nameHandle) {
+    nameHandle.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = compareState.nameColWidth;
+      nameHandle.classList.add("is-dragging");
+      document.documentElement.classList.add("col-resizing");
 
-  if (primaryTokens.length === 0) {
+      const onMove = (ev: MouseEvent) => {
+        compareState.nameColWidth = Math.max(80, startW + ev.clientX - startX);
+        wrapEl.style.setProperty("--cmp-col-template", buildCmpTemplate());
+      };
+      const onUp = () => {
+        nameHandle.classList.remove("is-dragging");
+        document.documentElement.classList.remove("col-resizing");
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+  }
+
+  // Wire set column resize handles
+  headerEl
+    .querySelectorAll<HTMLElement>(".cmp-set-resize")
+    .forEach((handle) => {
+      handle.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const setId = handle.dataset.resizeSet!;
+        const startX = e.clientX;
+        const startW = getSetW(setId);
+        handle.classList.add("is-dragging");
+        document.documentElement.classList.add("col-resizing");
+
+        const onMove = (ev: MouseEvent) => {
+          compareState.setColWidths.set(
+            setId,
+            Math.max(CMP_COL_MIN, startW + ev.clientX - startX),
+          );
+          wrapEl.style.setProperty("--cmp-col-template", buildCmpTemplate());
+        };
+        const onUp = () => {
+          handle.classList.remove("is-dragging");
+          document.documentElement.classList.remove("col-resizing");
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
+        };
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+      });
+    });
+
+  // ── Body ────────────────────────────────────────────────────────────────
+  // Build a union of all token names across primary + compared sets so every
+  // token is visible regardless of which set it lives in.
+  const primarySetId = compareState.primarySetId!;
+  const primaryMap = new Map<string, SerializedToken>();
+  for (const t of state.tokens) primaryMap.set(t.name, t);
+
+  const seen = new Set<string>();
+  type RowInfo = { name: string; type: string; sortToken: SerializedToken };
+  const allRows: RowInfo[] = [];
+
+  for (const t of getSortedTokens(state.tokens)) {
+    if (!seen.has(t.name)) {
+      seen.add(t.name);
+      allRows.push({ name: t.name, type: t.type, sortToken: t });
+    }
+  }
+  for (const setId of compareState.comparedSetIds) {
+    const tokenMap = compareState.comparedTokenMaps.get(setId);
+    if (!tokenMap) continue;
+    for (const [name, t] of tokenMap) {
+      if (!seen.has(name)) {
+        seen.add(name);
+        allRows.push({ name, type: t.type, sortToken: t });
+      }
+    }
+  }
+
+  if (compareState.sortCol) {
+    const col = compareState.sortCol;
+    const dir = compareState.sortDir === "asc" ? 1 : -1;
+
+    const valueForSort = (name: string): string => {
+      if (col === "name") return name;
+      // col is a setId — look up the token's value in that set
+      let token: SerializedToken | undefined;
+      if (col === primarySetId) {
+        token = primaryMap.get(name);
+      } else {
+        token = compareState.comparedTokenMaps.get(col)?.get(name);
+      }
+      return (token?.resolvedValue ?? token?.value ?? "").toLowerCase();
+    };
+
+    allRows.sort((a, b) => {
+      const av = valueForSort(a.name).toLowerCase();
+      const bv = valueForSort(b.name).toLowerCase();
+      if (!av && bv) return 1;
+      if (av && !bv) return -1;
+      return av < bv ? -dir : av > bv ? dir : 0;
+    });
+  }
+
+  if (allRows.length === 0) {
     bodyEl.innerHTML = `<div class="empty-state-msg body-s">No tokens yet.</div>`;
     return;
   }
 
-  const rows = primaryTokens
-    .map((token) => {
+  const cmpEditBtn = (tokenName: string, setId: string) =>
+    `<button class="cmp-edit-btn icon-btn" data-cmp-edit-token="${esc(tokenName)}" data-cmp-edit-set="${esc(setId)}"
+             title="Edit token" aria-label="Edit token">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M10.5 2.5 13.5 5.5 6 13H3v-3l7.5-7.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+      </svg>
+    </button>`;
+
+  const missingCellHtml = (name: string, type: string, setId: string) =>
+    `<div class="cmp-td cmp-td-missing">
+      <span>No tokens with the same name in this set.</span>
+      <button class="cmp-add-token-btn" data-cmp-add-name="${esc(name)}"
+              data-cmp-add-type="${esc(type)}" data-cmp-add-set="${esc(setId)}"
+              title="Add token to this set" aria-label="Add token to this set">+</button>
+    </div>`;
+
+  const valueCellEditableHtml = (token: SerializedToken, setId: string) =>
+    `<div class="cmp-td cmp-td-editable">
+      <div class="col-value-inner">${valueCellHtmlForCompare(token, setId)}</div>
+      ${cmpEditBtn(token.name, setId)}
+    </div>`;
+
+  const rows = allRows
+    .map(({ name, type }) => {
+      const primaryToken = primaryMap.get(name);
+      const primaryCell = primaryToken
+        ? valueCellEditableHtml(primaryToken, primarySetId)
+        : missingCellHtml(name, type, primarySetId);
+
       const comparedCells = compareState.comparedSetIds
         .map((setId) => {
           const tokenMap = compareState.comparedTokenMaps.get(setId);
-          if (!tokenMap) {
-            // Tokens still loading for this set
-            return `<div class="cmp-td cmp-td-loading">—</div>`;
-          }
-          const compToken = tokenMap.get(token.name);
-          if (!compToken) {
-            return `<div class="cmp-td cmp-td-missing">No tokens with the same name in this set.</div>`;
-          }
-          return `<div class="cmp-td"><div class="col-value-inner">${valueCellHtmlReadOnly(compToken)}</div></div>`;
+          if (!tokenMap) return `<div class="cmp-td cmp-td-loading">—</div>`;
+          const compToken = tokenMap.get(name);
+          if (!compToken) return missingCellHtml(name, type, setId);
+          return valueCellEditableHtml(compToken, setId);
         })
         .join("");
 
       return `<div class="cmp-row" role="row">
         <div class="cmp-td cmp-td-name">
-          <span class="col-name-text" title="${esc(token.name)}">${esc(token.name)}</span>
+          <span class="col-name-text" title="${esc(name)}">${esc(name)}</span>
         </div>
-        <div class="cmp-td">
-          <div class="col-value-inner">${valueCellHtmlReadOnly(token)}</div>
-        </div>
+        ${primaryCell}
         ${comparedCells}
         <div class="cmp-td"></div>
       </div>`;
@@ -3423,6 +4081,77 @@ function renderCompareTable(): void {
     .join("");
 
   bodyEl.innerHTML = rows;
+
+  // Wire edit buttons
+  bodyEl
+    .querySelectorAll<HTMLElement>("[data-cmp-edit-token]")
+    .forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const tokenName = btn.dataset.cmpEditToken!;
+        const setId = btn.dataset.cmpEditSet!;
+        let token: SerializedToken | undefined;
+        if (setId === compareState.primarySetId) {
+          token = state.tokens.find((t) => t.name === tokenName);
+        } else {
+          token = compareState.comparedTokenMaps.get(setId)?.get(tokenName);
+        }
+        if (token) showEditTokenModal(token, setId);
+      });
+    });
+
+  // Wire add-token buttons in missing cells
+  bodyEl.querySelectorAll<HTMLElement>("[data-cmp-add-name]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const name = btn.dataset.cmpAddName!;
+      const type = btn.dataset.cmpAddType!;
+      const setId = btn.dataset.cmpAddSet!;
+      showNewTokenModal(type, { name, targetSetId: setId });
+    });
+  });
+
+  // Wire alias chip clicks
+  bodyEl.querySelectorAll<HTMLElement>(".cmp-alias-chip").forEach((chip) => {
+    chip.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const tokenName = chip.dataset.cmpChipToken!;
+      const setId = chip.dataset.cmpChipSet!;
+      let token: SerializedToken | undefined;
+      if (setId === compareState.primarySetId) {
+        token = state.tokens.find((t) => t.name === tokenName);
+      } else {
+        token = compareState.comparedTokenMaps.get(setId)?.get(tokenName);
+      }
+      if (!token) return;
+
+      if (aliasEditor && aliasEditor.token.id === token.id && !aliasEditor.compositeCtx) {
+        closeAliasEditor();
+        return;
+      }
+      closeAliasEditor();
+
+      aliasEditor = {
+        token,
+        inputValue: token.value,
+        searchValue: "",
+        mode: "edit",
+        pickerSets: [],
+        chipEl: chip,
+        collapsedGroups: new Set(),
+        targetSetId: setId,
+      };
+
+      const popover = getOrCreateEditorPopover();
+      popover.classList.remove("alias-editor-hidden");
+      positionAliasEditor();
+      renderAliasEditor();
+
+      setTimeout(() => {
+        document.addEventListener("mousedown", onAliasEditorOutsideClick, true);
+      }, 0);
+    });
+  });
 }
 
 /**
@@ -3430,10 +4159,12 @@ function renderCompareTable(): void {
  * be added to the comparison.  Positioned below the "Add set" button.
  */
 function showAddSetDropdown(e: MouseEvent): void {
-  const btn  = e.currentTarget as HTMLElement;
+  const btn = e.currentTarget as HTMLElement;
   const rect = btn.getBoundingClientRect();
   const otherSets = state.sets.filter(
-    (s) => s.id !== compareState.primarySetId && !compareState.comparedSetIds.includes(s.id)
+    (s) =>
+      s.id !== compareState.primarySetId &&
+      !compareState.comparedSetIds.includes(s.id),
   );
   if (otherSets.length === 0) return;
   showContextMenu(
@@ -3443,14 +4174,14 @@ function showAddSetDropdown(e: MouseEvent): void {
       label: set.name,
       icon: ICON_SET_SVG,
       action: () => addComparedSet(set.id),
-    }))
+    })),
   );
 }
 
 /** Apply all compare-mode UI changes without triggering a table re-render. */
 function exitCompareModeQuiet(): void {
-  compareState.active        = false;
-  compareState.primarySetId  = null;
+  compareState.active = false;
+  compareState.primarySetId = null;
   compareState.comparedSetIds = [];
   compareState.comparedTokenMaps.clear();
 
@@ -3481,8 +4212,8 @@ function exitCompareMode(): void {
  */
 function enterCompareMode(primarySetId: string): void {
   // Reset silently so selectSet() below doesn't trigger another exitCompareModeQuiet()
-  compareState.active        = false;
-  compareState.primarySetId  = null;
+  compareState.active = false;
+  compareState.primarySetId = null;
   compareState.comparedSetIds = [];
   compareState.comparedTokenMaps.clear();
 
@@ -3492,7 +4223,7 @@ function enterCompareMode(primarySetId: string): void {
   }
 
   // Activate compare mode
-  compareState.active       = true;
+  compareState.active = true;
   compareState.primarySetId = primarySetId;
 
   // Switch table views
@@ -3517,7 +4248,9 @@ function addComparedSet(setId: string): void {
 
 /** Remove a compared-set column. */
 function removeComparedSet(setId: string): void {
-  compareState.comparedSetIds = compareState.comparedSetIds.filter((id) => id !== setId);
+  compareState.comparedSetIds = compareState.comparedSetIds.filter(
+    (id) => id !== setId,
+  );
   compareState.comparedTokenMaps.delete(setId);
   renderCompareTable();
 }
@@ -3542,11 +4275,30 @@ function bindGlobalListeners(): void {
   el("sidebar-new-set-btn")?.addEventListener("click", showNewSetModal);
   el("main-new-set-btn")?.addEventListener("click", showNewSetModal);
 
+  // Compare sets from sidebar
+  el("sidebar-compare-btn")?.addEventListener("click", (e) => {
+    if (state.sets.length < 2) return;
+    const btn = e.currentTarget as HTMLElement;
+    const rect = btn.getBoundingClientRect();
+    showContextMenu(
+      rect.right + 4,
+      rect.top,
+      state.sets.map((set) => ({
+        label: set.name,
+        icon: ICON_SET_SVG,
+        action: () => enterCompareMode(set.id),
+      })),
+    );
+  });
+
   // Math info
   el("math-info-btn")?.addEventListener("click", showMathInfoModal);
 
   // Exit comparison mode
   el("compare-exit-btn")?.addEventListener("click", exitCompareMode);
+
+  // Breadcrumb "Tokens /" → back to all-sets overview
+  el("breadcrumb-back")?.addEventListener("click", () => selectSet(null));
 
   // Toggle sidebar
   el("toggle-sidebar-overview")?.addEventListener("click", toggleSidebar);
@@ -3570,15 +4322,17 @@ function bindGlobalListeners(): void {
   // Select all tokens checkbox
   el("select-all-tokens")?.addEventListener("change", (e) => {
     const checked = (e.target as HTMLInputElement).checked;
-    document.querySelectorAll<HTMLInputElement>(".token-check").forEach((cb) => {
-      cb.checked = checked;
-      const tokenId = cb.dataset.tokenId!;
-      if (checked) {
-        selectedTokenIds.add(tokenId);
-      } else {
-        selectedTokenIds.delete(tokenId);
-      }
-    });
+    document
+      .querySelectorAll<HTMLInputElement>(".token-check")
+      .forEach((cb) => {
+        cb.checked = checked;
+        const tokenId = cb.dataset.tokenId!;
+        if (checked) {
+          selectedTokenIds.add(tokenId);
+        } else {
+          selectedTokenIds.delete(tokenId);
+        }
+      });
     renderBulkBar();
   });
 
@@ -3586,9 +4340,11 @@ function bindGlobalListeners(): void {
   bindBulkBar();
 
   // Sort header clicks
-  document.querySelectorAll<HTMLElement>(".th-sortable[data-sort-key]").forEach((th) => {
-    th.addEventListener("click", onSortHeaderClick);
-  });
+  document
+    .querySelectorAll<HTMLElement>(".th-sortable[data-sort-key]")
+    .forEach((th) => {
+      th.addEventListener("click", onSortHeaderClick);
+    });
 
   // Global Escape key: close context menu / modal
   document.addEventListener("keydown", (e) => {
