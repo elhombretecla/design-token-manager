@@ -13,7 +13,6 @@ A full-featured design token manager plugin for Penpot. Create, organize, and ma
 - **Color Picker**: Built-in color picker with HEX, RGB and HSL modes for color tokens
 - **Token Search**: Filter tokens by name, type or value within any set
 - **Bulk Actions**: Select multiple tokens and move or duplicate them across sets in one action
-- **Import / Export**: Upload and download token sets as JSON files
 - **Sortable Table**: Sort tokens by name, value, resolved value or type
 - **Penpot Theme Sync**: Automatically adapts to Penpot's light and dark theme
 
@@ -39,15 +38,15 @@ A full-featured design token manager plugin for Penpot. Create, organize, and ma
 
 ## Development
 
+Requirements: Node.js `^20.19.0 || >=22.12.0` and a Penpot version whose plugin API exposes design tokens (`@penpot/plugin-types` 1.5+). On older Penpot versions the plugin shows a notice instead of the UI.
+
 ```bash
-# Install dependencies
-npm install
-
-# Development mode (watch)
-npm run dev
-
-# Build for production
-npm run build
+npm install        # install dependencies
+npm run dev        # build in watch mode
+npm run build      # typecheck + production build
+npm run typecheck  # TypeScript only
+npm run lint       # ESLint
+npm test           # unit tests (Vitest)
 ```
 
 ## License

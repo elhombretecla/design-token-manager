@@ -60,9 +60,6 @@ export function sanitizeTypographyValueForApi(
     if (v == null || v === "")       continue;  // empty → let Penpot default
     out[k] = v;
   }
-  if (import.meta.env.DEV) {
-    console.debug("[DTM] sanitized API payload:", JSON.stringify(out));
-  }
   return out;
 }
 

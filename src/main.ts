@@ -4,8 +4,6 @@ import type { SerializedSet, SerializedToken, SerializedTheme, AliasPickerSet, P
 import { esc } from "./utils/esc";
 import { isAlias, parseMixedValue } from "./utils/alias";
 import { hsvToRgb, rgbToHsv, hexToRgb, rgbToHex, rgbToHsl, hslToRgb, parseCssColor } from "./utils/color";
-import { transitToPlain } from "./utils/transit";
-import { collectStringsDeep, extractFontFamilyBestEffort } from "./utils/fontExtraction";
 import { normalizeShadowValueToPreview } from "./utils/shadowNormalize";
 import { sanitizeTypographyValueForApi, normalizeTypographyValueToForm } from "./utils/typographyNormalize";
 
@@ -189,7 +187,7 @@ const COL_DEFAULT = [52, 170, 185, 160, 110, 36];
 const COL_MIN     = [52,  80,  80,  80,  80, 36];
 const COL_FIXED   = new Set([0, 5]); // check + actions are not user-resizable
 
-let colWidths = [...COL_DEFAULT];
+const colWidths = [...COL_DEFAULT];
 
 function applyColWidths(): void {
   const wrap = document.querySelector<HTMLElement>(".tokens-table-wrap");
@@ -276,8 +274,8 @@ window.addEventListener("message", (event: MessageEvent) => {
   const msg = event.data as PluginMessage;
 
   // Penpot theme change
-  if ((msg as any).source === "penpot" && (msg as any).type === "themechange") {
-    document.body.dataset.theme = (msg as any).theme;
+  if (msg.type === "themechange") {
+    document.body.dataset.theme = msg.theme;
     return;
   }
 
@@ -379,6 +377,10 @@ window.addEventListener("message", (event: MessageEvent) => {
     case "error":
       console.error("[Token Manager]", msg.message);
       break;
+
+    case "unsupported":
+      showUnsupportedNotice(msg.penpotVersion);
+      break;
   }
 });
 
@@ -418,6 +420,17 @@ function selectSet(setId: string | null): void {
 
   // Re-render sidebar to reflect new active state and any ancestor expansion.
   renderSidebar();
+}
+
+// The running Penpot doesn't expose the token API (plugin API < 1.5).
+function showUnsupportedNotice(penpotVersion: string): void {
+  const version = penpotVersion ? ` (Penpot ${esc(penpotVersion)})` : "";
+  el("main-content").innerHTML = `
+    <div class="empty-state-msg body-s">
+      This version of Penpot${version} doesn't support design tokens in plugins.
+      Please update Penpot to use Design Token Manager.
+    </div>`;
+  el("sidebar").classList.add("hidden");
 }
 
 function toggleSidebar(): void {
@@ -2157,11 +2170,6 @@ function shadowFieldsHtml(x = "0", y = "4", blur = "8", spread = "0", color = "r
 // `vals` is produced by normalizeTypographyValueToForm → always uses the
 // UI-form key names: fontFamily, fontSize (singular), fontWeight, etc.
 function typographyFieldsHtml(vals: Record<string, string> = {}): string {
-  // ── Debug log C ──────────────────────────────────────────────────────────
-  if (import.meta.env.DEV) {
-    console.debug("[DTM-C] typographyFieldsHtml vals:", vals);
-  }
-
   const v = (k: string) => esc(vals[k] ?? "");
   return `
     <div class="typo-grid">
@@ -2747,243 +2755,13 @@ function showNewTokenModal(initialType = "color"): void {
 //  MODAL: EDIT TOKEN
 // ════════════════════════════════════════════════════════════════════════
 
-/**
- * DEV-only: builds a collapsible <details> panel that shows the raw and
- * normalised shape of a typography token's value / resolvedValue.
- * Only called when import.meta.env.DEV is true — safe to include here because
- * Vite replaces the constant at build time and minifiers prune dead branches.
- */
-function typographyInspectorHtml(
-  token: SerializedToken,
-  normalized: Record<string, string>,
-): string {
-  /** Parse one wire-format string and return an inspector summary object. */
-  function inspectRaw(raw: string | undefined): {
-    kind: string;
-    rawKeys: string[];
-    transitKeys: string[];
-    familyCandidates: string[];
-    chosenFamily: string | undefined;
-    pretty: string;
-    normStr: string;
-  } {
-    const empty = { kind: "empty", rawKeys: [] as string[], transitKeys: [] as string[],
-                    familyCandidates: [] as string[], chosenFamily: undefined,
-                    pretty: "(empty)", normStr: "{}" };
-    if (raw == null || raw === "") return empty;
-
-    // Step 1: raw JSON parse — shows the wire shape ($meta$, $cnt$, $arr$, …)
-    let parsed: unknown = null;
-    try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
-    const rawKeys =
-      typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-        ? Object.keys(parsed as object) : [];
-
-    // Step 2: transit-flatten — shows the semantic keys (font-size, font-family, …)
-    let transitObj: unknown = null;
-    try { transitObj = transitToPlain(parsed); } catch { /* keep null */ }
-    const transitKeys =
-      typeof transitObj === "object" && transitObj !== null && !Array.isArray(transitObj)
-        ? Object.keys(transitObj as object) : [];
-
-    // Step 3: run collectStringsDeep on the raw font-family value and pick best
-    let familyCandidates: string[] = [];
-    let chosenFamily: string | undefined;
-    try {
-      if (typeof transitObj === "object" && transitObj !== null && !Array.isArray(transitObj)) {
-        const m = transitObj as Record<string, unknown>;
-        const rawFam = m["font-family"] ?? m.fontFamilies ?? m.fontFamily;
-        collectStringsDeep(rawFam, familyCandidates, 0, 8);
-        if (familyCandidates.length > 20) familyCandidates = familyCandidates.slice(0, 20);
-        chosenFamily = extractFontFamilyBestEffort(rawFam);
-      }
-    } catch { /* keep defaults */ }
-
-    // Pretty-print raw structure (truncated)
-    let pretty: string;
-    try { pretty = JSON.stringify(parsed, null, 2) ?? raw; } catch { pretty = raw; }
-    if (pretty.length > 800) pretty = pretty.slice(0, 800) + "\n…(truncated)";
-
-    let normStr: string;
-    try { normStr = JSON.stringify(normalizeTypographyValueToForm(raw), null, 2); } catch { normStr = "(error)"; }
-
-    return {
-      kind: typeof parsed === "object" && parsed !== null ? "object" : "string",
-      rawKeys, transitKeys, familyCandidates, chosenFamily, pretty, normStr,
-    };
-  }
-
-  const vi = inspectRaw(token.value);
-  const ri = inspectRaw(token.resolvedValue);
-  // For token.value we already have the normalized result — reuse it.
-  const normForValue = JSON.stringify(normalized, null, 2);
-
-  const row = (k: string, v: string): string =>
-    `<div class="dtm-irow"><span class="dtm-ikey">${esc(k)}</span><code class="dtm-ival">${esc(v)}</code></div>`;
-
-  const section = (
-    title: string,
-    info: ReturnType<typeof inspectRaw>,
-    overrideNorm?: string,
-  ): string => `
-    <div class="dtm-isect">
-      <div class="dtm-isect-title">${esc(title)}</div>
-      ${row("kind", info.kind)}
-      ${row("raw keys", "[" + info.rawKeys.join(", ") + "]")}
-      ${row("transit keys", "[" + info.transitKeys.join(", ") + "]")}
-      ${row("candidates[]", info.familyCandidates.length
-          ? "[" + info.familyCandidates.map(esc).join(", ") + "]"
-          : "(none found)")}
-      ${row("chosen fam.", info.chosenFamily !== undefined ? esc(info.chosenFamily) : "(none)")}
-      <pre class="dtm-ipre">${esc(info.pretty)}</pre>
-      <div class="dtm-isect-title">→ normalizeTypographyValueToForm(…)</div>
-      <pre class="dtm-ipre">${esc(overrideNorm ?? info.normStr)}</pre>
-    </div>`;
-
-  return `
-    <details class="dtm-inspector">
-      <summary class="dtm-inspector-sum">&#128269; Inspect token payload</summary>
-      <div class="dtm-inspector-bd">
-        ${section("token.value", vi, normForValue)}
-        ${section("token.resolvedValue", ri)}
-      </div>
-    </details>`;
-}
-
-/**
- * DEV-only inspector panel for Shadow tokens — mirrors typographyInspectorHtml.
- *
- * Shows: wire-format shape, raw Transit keys, semantic keys after
- * transitToPlain(), pretty-printed JSON, and normalizeShadowValueToPreview()
- * output.  Only called when import.meta.env.DEV is true.
- */
-function shadowInspectorHtml(
-  token: SerializedToken,
-  normalized: Record<string, string>,
-): string {
-  function inspectRaw(raw: string | undefined): {
-    kind: string;
-    rawKeys: string[];
-    transitKeys: string[];
-    pretty: string;
-    normStr: string;
-  } {
-    const empty = {
-      kind: "empty", rawKeys: [] as string[], transitKeys: [] as string[],
-      pretty: "(empty)", normStr: "{}",
-    };
-    if (raw == null || raw === "") return empty;
-
-    // Step 1: raw JSON parse — shows wire shape ($meta$, $cnt$, $arr$, …)
-    let parsed: unknown = null;
-    try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
-    const rawKeys =
-      typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-        ? Object.keys(parsed as object) : [];
-
-    // Step 2: transit-flatten — shows semantic keys (x, y, blur, …)
-    let transitObj: unknown = null;
-    try { transitObj = transitToPlain(parsed); } catch { /* keep null */ }
-    const transitKeys =
-      typeof transitObj === "object" && transitObj !== null && !Array.isArray(transitObj)
-        ? Object.keys(transitObj as object) : [];
-
-    let pretty: string;
-    try { pretty = JSON.stringify(parsed, null, 2) ?? raw; } catch { pretty = raw; }
-    if (pretty.length > 800) pretty = pretty.slice(0, 800) + "\n…(truncated)";
-
-    let normStr: string;
-    try { normStr = JSON.stringify(normalizeShadowValueToPreview(raw), null, 2); } catch { normStr = "(error)"; }
-
-    return {
-      kind: typeof parsed === "object" && parsed !== null ? "object" : "string",
-      rawKeys, transitKeys, pretty, normStr,
-    };
-  }
-
-  const vi = inspectRaw(token.value);
-  const ri = inspectRaw(token.resolvedValue);
-  // For token.value we already have the normalized result — reuse it.
-  const normForValue = JSON.stringify(normalized, null, 2);
-
-  const row = (k: string, v: string): string =>
-    `<div class="dtm-irow"><span class="dtm-ikey">${esc(k)}</span><code class="dtm-ival">${esc(v)}</code></div>`;
-
-  const section = (
-    title: string,
-    info: ReturnType<typeof inspectRaw>,
-    overrideNorm?: string,
-  ): string => `
-    <div class="dtm-isect">
-      <div class="dtm-isect-title">${esc(title)}</div>
-      ${row("kind", info.kind)}
-      ${row("raw keys", "[" + info.rawKeys.join(", ") + "]")}
-      ${row("transit keys", "[" + info.transitKeys.join(", ") + "]")}
-      <pre class="dtm-ipre">${esc(info.pretty)}</pre>
-      <div class="dtm-isect-title">→ normalizeShadowValueToPreview(…)</div>
-      <pre class="dtm-ipre">${esc(overrideNorm ?? info.normStr)}</pre>
-    </div>`;
-
-  return `
-    <details class="dtm-inspector">
-      <summary class="dtm-inspector-sum">&#128269; Inspect shadow payload</summary>
-      <div class="dtm-inspector-bd">
-        ${section("token.value", vi, normForValue)}
-        ${section("token.resolvedValue", ri)}
-      </div>
-    </details>`;
-}
-
 function buildEditValueSection(token: SerializedToken): string {
   if (token.type === "shadow") {
-    const normalized = normalizeShadowValueToPreview(token.value);
-
-    if (import.meta.env.DEV) {
-      console.debug("[DTM-B] shadow edit modal  name='" + token.name + "'",
-        "\n  raw token.value :", token.value,
-        "\n  normalized form :", normalized);
-    }
-
-    const inspectorEnabled = ((): boolean => {
-      try { return localStorage.getItem("dtm-inspector") !== "0"; } catch { return true; }
-    })();
-    const inspector = inspectorEnabled ? shadowInspectorHtml(token, normalized) : "";
-    return shadowFieldsHtml(
-      normalized.x, normalized.y, normalized.blur,
-      normalized.spread, normalized.color, normalized.type,
-    ) + inspector;
+    const n = normalizeShadowValueToPreview(token.value);
+    return shadowFieldsHtml(n.x, n.y, n.blur, n.spread, n.color, n.type);
   }
   if (token.type === "typography") {
-    const normalized = normalizeTypographyValueToForm(token.value);
-
-    // ── Debug log B ─────────────────────────────────────────────────────────
-    // import.meta.env.DEV is true in `npm run dev`, false in production build.
-    // We also relay through sendToPlugin so the info appears in the Penpot
-    // DevTools console (same place as log-A) — the plugin iframe's own console
-    // is only visible after switching the DevTools context selector.
-    if (import.meta.env.DEV) {
-      console.debug("[DTM-B] edit modal  name='" + token.name + "'",
-        "\n  raw token.value :", token.value,
-        "\n  normalized form :", normalized);
-
-      // Relay to plugin sandbox console (appears in Penpot's DevTools console)
-      sendToPlugin({
-        type: "dtm-debug",
-        label: "DTM-B  edit modal  name='" + token.name + "'",
-        payload: { rawValue: token.value, normalizedForm: normalized },
-      });
-    }
-
-    // ── In-UI inspector ──────────────────────────────────────────────────────
-    // Shown when localStorage key "dtm-inspector" is not "0".
-    // Defaults to visible so it appears out of the box without any setup.
-    // To hide:  localStorage.setItem("dtm-inspector", "0")  (from the iframe console)
-    // To show:  localStorage.setItem("dtm-inspector", "1")
-    const inspectorEnabled = ((): boolean => {
-      try { return localStorage.getItem("dtm-inspector") !== "0"; } catch { return true; }
-    })();
-    const inspector = inspectorEnabled ? typographyInspectorHtml(token, normalized) : "";
-    return typographyFieldsHtml(normalized) + inspector;
+    return typographyFieldsHtml(normalizeTypographyValueToForm(token.value));
   }
   return simpleValueFieldHtml(token.type, token.value);
 }

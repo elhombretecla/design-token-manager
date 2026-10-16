@@ -52,7 +52,8 @@ export type PluginMessage =
   | { type: "tokens-updated"; setId: string; tokens: SerializedToken[] }
   | { type: "all-tokens-by-type-loaded"; tokenType: string; sets: AliasPickerSet[] }
   | { type: "fonts-loaded"; fonts: string[] }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | { type: "unsupported"; penpotVersion: string };
 
 // ── UI-level sort state ───────────────────────────────────────────────────
 
