@@ -12,6 +12,16 @@ import type {
   TokenType,
   TokenValueString,
 } from "@penpot/plugin-types";
+import type {
+  CatalogSnapshot,
+  Op,
+  OpResult,
+  PluginMessage,
+  SnapshotSet,
+  SnapshotTheme,
+  SnapshotToken,
+  UiMessage,
+} from "./shared/protocol";
 
 // ── Open the plugin UI ────────────────────────────────────────────────
 penpot.ui.open("Design Token Manager", `?theme=${penpot.theme}`, {
@@ -39,17 +49,6 @@ function tokensApiAvailable(): boolean {
 // the `Token` union needs a single, documented widening.
 function setTokenValue(token: Token, value: TokenValueString): void {
   (token as { value: TokenValueString }).value = value;
-}
-
-// `addToken` doesn't take a description; it has to be set on the new token.
-function addTokenWithDescription(
-  set: TokenSet,
-  args: { type: TokenType; name: string; value: TokenValueString },
-  description: string,
-): Token {
-  const token = set.addToken(args);
-  if (description) token.description = description;
-  return token;
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -534,10 +533,6 @@ function tryParseObject(value: string): string | object {
   return value ?? "";
 }
 
-function isAliasRefString(value: string): boolean {
-  return /^\{[^{}]+\}$/.test((value ?? "").trim());
-}
-
 // Convert the UI's string form of a value into what the API expects:
 //   • fontFamilies — [:vector :text]: wrap plain names in an array.
 //   • typography   — JSON object; fontFamilies field wrapped in an array.
@@ -558,122 +553,7 @@ function cloneTokenValue(value: unknown): TokenValueString {
     : value) as TokenValueString;
 }
 
-function findTokenByNameGlobal(name: string): Token | undefined {
-  const cat = catalog();
-  for (const set of cat.sets) {
-    const found = set.tokens.find((t) => t.name === name);
-    if (found) return found;
-  }
-  return undefined;
-}
-
-function serializeScalarTokenValue(token: Token): string | undefined {
-  try {
-    if (token.resolvedValue != null) {
-      if (token.type === "fontFamilies") {
-        const rv = serializeFontFamilyValue(token.resolvedValue);
-        if (rv) return rv;
-      } else {
-        const rv = valueToString(token.resolvedValue);
-        if (rv && rv !== "{}") return rv;
-      }
-    }
-
-    if (token.type === "fontFamilies") {
-      const v = serializeFontFamilyValue(token.value);
-      return v || undefined;
-    }
-    const v = valueToString(token.value);
-    return (v && v !== "{}") ? v : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function resolveAliasReferenceToScalar(
-  maybeAlias: string,
-  seen: Set<string> = new Set(),
-): string | undefined {
-  const s = (maybeAlias ?? "").trim();
-  if (!isAliasRefString(s)) return s || undefined;
-
-  const refName = s.slice(1, -1).trim();
-  if (!refName || seen.has(refName)) return undefined;
-  seen.add(refName);
-
-  const refToken = findTokenByNameGlobal(refName);
-  if (!refToken) return undefined;
-
-  const resolved = serializeScalarTokenValue(refToken);
-  if (!resolved) return undefined;
-  if (isAliasRefString(resolved)) {
-    return resolveAliasReferenceToScalar(resolved, seen);
-  }
-  return resolved;
-}
-
-function parseJsonObjectString(input: string | undefined): Record<string, unknown> {
-  if (!input) return {};
-  const s = input.trim();
-  if (!s.startsWith("{") || !s.endsWith("}")) return {};
-  try {
-    const parsed: unknown = JSON.parse(s);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch { /* ignore malformed JSON */ }
-  return {};
-}
-
-function enrichTypographyResolvedValue(
-  token: Token,
-  resolvedTypography: string | undefined,
-  serializedTypographyValue: string,
-): string | undefined {
-  if (token.type !== "typography") return resolvedTypography;
-
-  const out = parseJsonObjectString(resolvedTypography);
-  const valueObj = parseJsonObjectString(serializedTypographyValue);
-
-  const keys = ["fontFamilies", "fontSizes", "fontWeight"] as const;
-  for (const key of keys) {
-    const current = out[key];
-    const fallback = valueObj[key];
-
-    const currentStr =
-      typeof current === "string" ? current :
-      typeof current === "number" ? String(current) :
-      undefined;
-    const fallbackStr =
-      typeof fallback === "string" ? fallback :
-      typeof fallback === "number" ? String(fallback) :
-      undefined;
-
-    const candidate = currentStr ?? fallbackStr;
-    if (!candidate) continue;
-    if (!isAliasRefString(candidate)) {
-      if (!(key in out)) out[key] = candidate;
-      continue;
-    }
-
-    const resolved = resolveAliasReferenceToScalar(candidate);
-    if (resolved) out[key] = resolved;
-  }
-
-  if (Object.keys(out).length === 0) return resolvedTypography;
-  return JSON.stringify(out);
-}
-
-function serializeSet(set: TokenSet) {
-  return {
-    id: set.id,
-    name: set.name,
-    active: set.active,
-    tokenCount: set.tokens.length,
-  };
-}
-
-function serializeToken(token: Token) {
+function serializeToken(token: Token): SnapshotToken {
   // resolvedValue is computed by Penpot's tokenscript engine at read time.
   // On a freshly created token the engine may not have run yet, causing the
   // proxy getter to throw internally.  We treat any error as "not resolved".
@@ -722,326 +602,261 @@ function serializeToken(token: Token) {
           ? serializeFontFamilyValue(token.value)
           : valueToString(token.value);
 
-  if (token.type === "typography") {
-    resolvedValue = enrichTypographyResolvedValue(token, resolvedValue, value);
-  }
-
   return {
     id: token.id,
     name: token.name ?? "",
     type: token.type ?? "",
     value,
     description: token.description ?? "",
-    resolvedValue,
+    penpotResolved: resolvedValue,
   };
 }
 
-function serializeTheme(theme: TokenTheme) {
+function serializeSet(set: TokenSet): SnapshotSet {
+  let tokens: SnapshotToken[] = [];
+  try {
+    tokens = set.tokens.map(serializeToken);
+  } catch (err) {
+    console.error("[Token Manager plugin] Could not read set", set.name, err);
+  }
+  return { id: set.id, name: set.name, active: set.active, tokens };
+}
+
+function serializeTheme(theme: TokenTheme): SnapshotTheme {
+  let setIds: string[] = [];
+  try {
+    setIds = theme.activeSets.map((s) => s.id);
+  } catch { /* keep empty */ }
   return {
     id: theme.id,
     group: theme.group ?? "",
     name: theme.name,
     active: theme.active,
+    setIds,
   };
 }
 
-// ── Broadcast full sets+themes list ──────────────────────────────────
-function broadcastSets(): void {
+function buildSnapshot(): CatalogSnapshot {
   const cat = catalog();
-  penpot.ui.sendMessage({
-    type: "sets-updated",
+  return {
     sets: cat.sets.map(serializeSet),
     themes: cat.themes.map(serializeTheme),
-  });
-}
-
-// ── Broadcast tokens for a specific set ──────────────────────────────
-function broadcastTokens(setId: string): void {
-  const set = catalog().getSetById(setId);
-  if (!set) return;
-  penpot.ui.sendMessage({
-    type: "tokens-updated",
-    setId,
-    tokens: set.tokens.map(serializeToken),
-  });
+  };
 }
 
 // ════════════════════════════════════════════════════════════════════════
-//  MESSAGE HANDLER  (UI → plugin)
+//  SNAPSHOT PUBLISHING & CHANGE DETECTION
+//  The token API has no change events, so external edits (Penpot's own
+//  tokens panel, undo, other collaborators) are detected by comparing the
+//  serialised snapshot after `contentsave` and on a slow periodic check.
 // ════════════════════════════════════════════════════════════════════════
 
-// ── Defensive message unwrap ──────────────────────────────────────────
-// penpot.ui.onMessage should deliver the payload already unwrapped, but
-// different Penpot host versions have been observed to forward:
-//   • the raw MessageEvent object     → has a `.data` property
-//   • a Figma-compat shim object      → has `.pluginMessage`
-//   • a generic wrapper               → has `.message` or `.payload`
-// We peel off one wrapping layer so the switch always sees {type, ...}.
-function unwrapMessage(raw: unknown): Record<string, unknown> {
-  if (!raw || typeof raw !== "object") return {} as Record<string, unknown>;
-  const r = raw as Record<string, unknown>;
-  if (r.type)                                                    return r;
-  if (r.data        && typeof r.data        === "object") return r.data        as Record<string, unknown>;
-  if (r.pluginMessage && typeof r.pluginMessage === "object") return r.pluginMessage as Record<string, unknown>;
-  if (r.message     && typeof r.message     === "object") return r.message     as Record<string, unknown>;
-  if (r.payload     && typeof r.payload     === "object") return r.payload     as Record<string, unknown>;
-  return r; // return as-is; switch will fall through to default
+const POLL_INTERVAL_MS = 2000;
+let lastSnapshotJson = "";
+let publishScheduled = false;
+
+function send(message: PluginMessage): void {
+  penpot.ui.sendMessage(message);
 }
 
-penpot.ui.onMessage((message: unknown) => {
-  const msg = unwrapMessage(message);
+/** Send the snapshot if it changed (or unconditionally with `force`). */
+function publishSnapshot(force = false): void {
+  if (!tokensApiAvailable()) return;
+  try {
+    const snapshot = buildSnapshot();
+    const json = JSON.stringify(snapshot);
+    if (!force && json === lastSnapshotJson) return;
+    lastSnapshotJson = json;
+    send({ type: "snapshot", snapshot });
+  } catch (err) {
+    console.error("[Token Manager plugin] Snapshot failed", err);
+  }
+}
 
+// Penpot's token engine settles after a mutation returns; reading the new
+// proxies in the same tick can throw. Coalesce publishes into the next tick.
+function schedulePublish(): void {
+  if (publishScheduled) return;
+  publishScheduled = true;
+  setTimeout(() => {
+    publishScheduled = false;
+    publishSnapshot();
+  }, 0);
+}
+
+const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+// ════════════════════════════════════════════════════════════════════════
+//  OPERATIONS  (UI → plugin)
+// ════════════════════════════════════════════════════════════════════════
+
+function requireSet(cat: TokenCatalog, setId: string): TokenSet {
+  const set = cat.getSetById(setId);
+  if (!set) throw new Error(`Set not found: ${setId}`);
+  return set;
+}
+
+function requireToken(set: TokenSet, tokenId: string): Token {
+  const token = set.getTokenById(tokenId);
+  if (!token) throw new Error(`Token not found in "${set.name}": ${tokenId}`);
+  return token;
+}
+
+// `addToken` doesn't take a description; set it once the engine settled.
+async function addTokenWithDescription(
+  set: TokenSet,
+  args: { type: TokenType; name: string; value: TokenValueString },
+  description: string,
+): Promise<void> {
+  const token = set.addToken(args);
+  if (!description) return;
+  await tick();
+  token.description = description;
+}
+
+async function runOp(cat: TokenCatalog, op: Op): Promise<void> {
+  switch (op.op) {
+    case "create-set":
+      cat.addSet({ name: op.name });
+      return;
+
+    case "rename-set":
+      requireSet(cat, op.setId).name = op.newName;
+      return;
+
+    case "duplicate-set":
+      requireSet(cat, op.setId).duplicate();
+      return;
+
+    case "delete-set":
+      requireSet(cat, op.setId).remove();
+      return;
+
+    case "create-token":
+      await addTokenWithDescription(requireSet(cat, op.setId), {
+        type: op.tokenType as TokenType,
+        name: op.name,
+        value: valueForApi(op.tokenType, op.value),
+      }, op.description);
+      return;
+
+    case "update-token": {
+      const token = requireToken(requireSet(cat, op.setId), op.tokenId);
+      // The name setter re-validates the whole token against Penpot's
+      // schema (fontFamilies tokens fail it), so only assign on change.
+      if (op.name !== token.name) token.name = op.name;
+      setTokenValue(token, valueForApi(token.type, op.value));
+      token.description = op.description ?? "";
+      return;
+    }
+
+    case "duplicate-token": {
+      const set = requireSet(cat, op.setId);
+      const original = requireToken(set, op.tokenId);
+      // Unique name against the live token list, never the UI's copy.
+      const existingNames = new Set(set.tokens.map((t) => t.name));
+      let copyName = `${original.name}-copy`;
+      for (let n = 2; existingNames.has(copyName); n++) {
+        copyName = `${original.name}-copy-${n}`;
+      }
+      await addTokenWithDescription(set, {
+        type: original.type,
+        name: copyName,
+        value: cloneTokenValue(original.value),
+      }, original.description ?? "");
+      return;
+    }
+
+    case "delete-token":
+      requireToken(requireSet(cat, op.setId), op.tokenId).remove();
+      return;
+
+    case "move-token": {
+      const fromSet = requireSet(cat, op.fromSetId);
+      const toSet = requireSet(cat, op.toSetId);
+      const token = requireToken(fromSet, op.tokenId);
+      if (toSet.tokens.some((t) => t.name === token.name)) {
+        throw new Error(`"${toSet.name}" already has a token named "${token.name}"`);
+      }
+      // Pass the live value (object for shadow/typography) rather than a
+      // stringified copy: Penpot reads a "{…}" string as an alias reference.
+      await addTokenWithDescription(toSet, {
+        type: token.type,
+        name: token.name,
+        value: cloneTokenValue(token.value),
+      }, token.description ?? "");
+      if (!op.copy) token.remove();
+      return;
+    }
+  }
+}
+
+async function runOps(reqId: number, ops: Op[]): Promise<void> {
+  const cat = catalog();
+  const results: OpResult[] = [];
+  for (const op of ops) {
+    try {
+      await runOp(cat, op);
+      results.push({ ok: true });
+    } catch (err) {
+      console.error("[Token Manager plugin]", op.op, err);
+      results.push({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+    // Let the token engine settle between operations of a batch.
+    await tick();
+  }
+  send({ type: "ops-result", reqId, results });
+  schedulePublish();
+}
+
+function scanDocumentFonts(): string[] {
+  const seen = new Set<string>();
+  try {
+    for (const shape of penpot.currentPage?.findShapes({ type: "text" }) ?? []) {
+      if (!penpot.utils.types.isText(shape)) continue;
+      if (shape.fontFamily !== "mixed") {
+        if (shape.fontFamily) seen.add(shape.fontFamily);
+        continue;
+      }
+      // Mixed fonts: sample per character (capped to keep it cheap).
+      const len = Math.min(shape.characters.length, 2000);
+      for (let i = 0; i < len; i++) {
+        const family = shape.getRange(i, i + 1).fontFamily;
+        if (family && family !== "mixed") seen.add(family);
+      }
+    }
+  } catch {
+    // Scanning is best-effort; return whatever was collected
+  }
+  return Array.from(seen).sort();
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  MESSAGE HANDLER
+// ════════════════════════════════════════════════════════════════════════
+
+penpot.ui.onMessage<UiMessage>((msg) => {
   // Older Penpot runtimes (before plugin API 1.5) have no token catalog.
   if (!tokensApiAvailable()) {
-    penpot.ui.sendMessage({ type: "unsupported", penpotVersion: penpot.version ?? "" });
+    send({ type: "unsupported", penpotVersion: penpot.version ?? "" });
     return;
   }
 
-  try {
-    const cat = catalog();
+  switch (msg?.type) {
+    case "init":
+      publishSnapshot(true);
+      break;
 
-    switch (msg.type) {
-      // ── Init ─────────────────────────────────────────────────────────
-      case "init": {
-        penpot.ui.sendMessage({
-          type: "loaded",
-          sets: cat.sets.map(serializeSet),
-          themes: cat.themes.map(serializeTheme),
-        });
-        break;
-      }
+    case "ops":
+      void runOps(msg.reqId, msg.ops);
+      break;
 
-      // ── Fetch tokens for a set ────────────────────────────────────────
-      case "get-tokens": {
-        const setId = msg.setId as string;
-        const set = cat.getSetById(setId);
-        if (!set) throw new Error(`Set not found: ${setId}`);
-        penpot.ui.sendMessage({
-          type: "tokens-loaded",
-          setId,
-          tokens: set.tokens.map(serializeToken),
-        });
-        break;
-      }
+    case "scan-fonts":
+      send({ type: "fonts-loaded", fonts: scanDocumentFonts() });
+      break;
 
-      // ── Create set ────────────────────────────────────────────────────
-      case "create-set": {
-        cat.addSet({ name: msg.name as string });
-        broadcastSets();
-        break;
-      }
-
-      // ── Rename set ────────────────────────────────────────────────────
-      case "rename-set": {
-        const set = cat.getSetById(msg.setId as string);
-        if (!set) throw new Error(`Set not found: ${msg.setId}`);
-        set.name = msg.newName as string;
-        broadcastSets();
-        break;
-      }
-
-      // ── Duplicate set ─────────────────────────────────────────────────
-      case "duplicate-set": {
-        const set = cat.getSetById(msg.setId as string);
-        if (!set) throw new Error(`Set not found: ${msg.setId}`);
-        set.duplicate();
-        broadcastSets();
-        break;
-      }
-
-      // ── Delete set ────────────────────────────────────────────────────
-      case "delete-set": {
-        const set = cat.getSetById(msg.setId as string);
-        if (!set) throw new Error(`Set not found: ${msg.setId}`);
-        set.remove();
-        broadcastSets();
-        break;
-      }
-
-      // ── Create token ──────────────────────────────────────────────────
-      case "create-token": {
-        const setId = msg.setId as string;
-        const set = cat.getSetById(setId);
-        if (!set) throw new Error(`Set not found: ${setId}`);
-        addTokenWithDescription(set, {
-          type: msg.tokenType as TokenType,
-          name: msg.name as string,
-          value: valueForApi(msg.tokenType as string, msg.value as string),
-        }, (msg.description as string) ?? "");
-        // Defer broadcast by one tick — same reason as duplicate-token:
-        // accessing the proxy synchronously after addToken crashes the
-        // tokenscript resolution engine.
-        setTimeout(() => {
-          broadcastTokens(setId);
-          broadcastSets();
-        }, 0);
-        break;
-      }
-
-      // ── Update token ──────────────────────────────────────────────────
-      case "update-token": {
-        const setId = msg.setId as string;
-        const set = cat.getSetById(setId);
-        if (!set) throw new Error(`Set not found: ${setId}`);
-
-        const token = set.tokens.find((t) => t.id === (msg.tokenId as string));
-        if (!token) throw new Error(`Token not found: ${msg.tokenId}`);
-
-        // The name setter re-validates the whole token against Penpot's
-        // schema (fontFamilies tokens fail it), so only assign on change.
-        if ((msg.name as string) !== token.name) {
-          token.name = msg.name as string;
-        }
-        setTokenValue(token, valueForApi(token.type, msg.value as string));
-        token.description = (msg.description as string) ?? "";
-
-        broadcastTokens(setId);
-        break;
-      }
-
-      // ── Duplicate token ───────────────────────────────────────────────
-      case "duplicate-token": {
-        const setId = msg.setId as string;
-        const tokenId = msg.tokenId as string;
-        const set = cat.getSetById(setId);
-        if (!set) throw new Error(`Set not found: ${setId}`);
-
-        // Fetch the token fresh from the live Penpot API rather than trusting
-        // the UI's serialised snapshot.  For composite types (shadow, typography)
-        // the live `value` is a plain JS object; the UI snapshot is a pre-stringified
-        // copy that can corrupt the token if fed back into addToken directly.
-        const original = set.getTokenById(tokenId);
-        if (!original) throw new Error(`Token not found: ${tokenId}`);
-
-        // Resolve a unique name against the *live* token list — not the UI
-        // snapshot — so stale UI state can never cause an API name collision.
-        const existingNames = new Set(set.tokens.map((t) => t.name));
-        let copyName = `${original.name}-copy`;
-        let counter = 2;
-        while (existingNames.has(copyName)) {
-          copyName = `${original.name}-copy-${counter++}`;
-        }
-
-        addTokenWithDescription(set, {
-          type: original.type,
-          name: copyName,
-          value: cloneTokenValue(original.value),
-        }, original.description ?? "");
-
-        // Penpot's tokenscript engine resolves token values asynchronously
-        // after addToken returns.  Accessing any proxy property (value,
-        // resolvedValue, name…) in the same synchronous tick puts the engine
-        // in an inconsistent state and throws "Cannot read properties of null
-        // (reading 'value')".  A single-tick defer lets the engine settle so
-        // broadcastTokens can safely serialize the complete, updated set.
-        setTimeout(() => {
-          broadcastTokens(setId);
-          broadcastSets();
-        }, 0);
-        break;
-      }
-
-      // ── Delete token ──────────────────────────────────────────────────
-      case "delete-token": {
-        const setId = msg.setId as string;
-        const set = cat.getSetById(setId);
-        if (!set) throw new Error(`Set not found: ${setId}`);
-
-        const token = set.tokens.find((t) => t.id === (msg.tokenId as string));
-        if (!token) throw new Error(`Token not found: ${msg.tokenId}`);
-        token.remove();
-
-        broadcastTokens(setId);
-        broadcastSets();
-        break;
-      }
-
-      // ── Move token (or copy) ──────────────────────────────────────────
-      case "move-token": {
-        const fromSetId = msg.fromSetId as string;
-        const toSetId = msg.toSetId as string;
-        const copy = Boolean(msg.copy);
-
-        const fromSet = cat.getSetById(fromSetId);
-        const toSet = cat.getSetById(toSetId);
-        if (!fromSet) throw new Error(`Source set not found: ${fromSetId}`);
-        if (!toSet) throw new Error(`Target set not found: ${toSetId}`);
-
-        const token = fromSet.tokens.find((t) => t.id === (msg.tokenId as string));
-        if (!token) throw new Error(`Token not found: ${msg.tokenId}`);
-
-        // Pass the live value (object for shadow/typography) rather than a
-        // stringified copy: Penpot reads a "{…}" string as an alias reference.
-        addTokenWithDescription(toSet, {
-          type: token.type,
-          name: token.name,
-          value: cloneTokenValue(token.value),
-        }, token.description ?? "");
-
-        if (!copy) token.remove();
-
-        // Broadcast both affected sets
-        broadcastTokens(fromSetId);
-        broadcastSets();
-        break;
-      }
-
-      // ── Fetch all tokens of a given type across all sets (for alias picker) ──
-      case "get-all-tokens-by-type": {
-        const tokenType = msg.tokenType as string;
-        const result = cat.sets
-          .map((set) => ({
-            setId: set.id,
-            setName: set.name,
-            tokens: set.tokens
-              .filter((t) => t.type === tokenType)
-              .map(serializeToken),
-          }))
-          .filter((s) => s.tokens.length > 0);
-        penpot.ui.sendMessage({
-          type: "all-tokens-by-type-loaded",
-          tokenType,
-          sets: result,
-        });
-        break;
-      }
-
-      // ── Scan document fonts ───────────────────────────────────────────
-      case "scan-fonts": {
-        const seen = new Set<string>();
-        try {
-          for (const shape of penpot.currentPage?.findShapes({ type: "text" }) ?? []) {
-            if (!penpot.utils.types.isText(shape)) continue;
-            if (shape.fontFamily !== "mixed") {
-              if (shape.fontFamily) seen.add(shape.fontFamily);
-              continue;
-            }
-            // Mixed fonts: sample per character (capped to keep it cheap).
-            const len = Math.min(shape.characters.length, 2000);
-            for (let i = 0; i < len; i++) {
-              const family = shape.getRange(i, i + 1).fontFamily;
-              if (family && family !== "mixed") seen.add(family);
-            }
-          }
-        } catch {
-          // Scanning is best-effort; return whatever was collected
-        }
-        penpot.ui.sendMessage({
-          type: "fonts-loaded",
-          fonts: Array.from(seen).sort(),
-        });
-        break;
-      }
-
-      default:
-        console.warn("[Token Manager plugin] Unknown message type:", msg.type);
-    }
-  } catch (err) {
-    console.error("[Token Manager plugin]", err);
-    penpot.ui.sendMessage({
-      type: "error",
-      message: err instanceof Error ? err.message : String(err),
-    });
+    default:
+      console.warn("[Token Manager plugin] Unknown message:", msg);
   }
 });
 
@@ -1051,5 +866,8 @@ penpot.ui.onMessage((message: unknown) => {
 
 // Keep the UI in sync with the Penpot theme
 penpot.on("themechange", (theme) => {
-  penpot.ui.sendMessage({ source: "penpot", type: "themechange", theme });
+  send({ source: "penpot", type: "themechange", theme });
 });
+
+penpot.on("contentsave", () => publishSnapshot());
+setInterval(() => publishSnapshot(), POLL_INTERVAL_MS);

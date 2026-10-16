@@ -1453,12 +1453,6 @@ html.col-resizing * {
   white-space: nowrap;
 }
 
-/* Loading indicator while compared set tokens are being fetched */
-.cmp-td-loading {
-  font-size: var(--font-size-s);
-  color: var(--foreground-secondary);
-}
-
 /* ── Sidebar footer (Math info link) ────────────────────────────────────── */
 .sidebar-footer {
   border-top: 1px solid var(--background-quaternary);
@@ -1917,4 +1911,85 @@ html.col-resizing * {
 .has-fp-chevron {
   padding-right: 28px !important;
   width: 100%;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   RESOLUTION CONTEXT, STATUS & TOASTS (v2 data layer)
+   ════════════════════════════════════════════════════════════════════════ */
+
+.context-select-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.context-select-label {
+  color: var(--foreground-secondary);
+  white-space: nowrap;
+}
+
+.context-select {
+  max-width: 200px;
+}
+
+/* Resolved-value cell when the value can't be computed in the context */
+.token-resolved-issue {
+  font-size: var(--font-size-s);
+  color: var(--error-500);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+
+.token-resolved-text--warn {
+  color: var(--warning-500);
+}
+
+.alias-chip--broken {
+  border-color: var(--error-500);
+  color: var(--error-500);
+}
+
+/* Compare mode: highlight rows / cells whose resolved value differs */
+.cmp-row--diff .cmp-td-name .col-name-text {
+  color: var(--warning-500);
+}
+
+.cmp-td--diff {
+  box-shadow: inset 2px 0 0 var(--warning-500);
+}
+
+.cmp-resolved {
+  margin-top: 2px;
+  font-size: var(--font-size-xs);
+  color: var(--foreground-secondary);
+}
+
+/* Toasts */
+.toast-region {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 1000;
+  max-width: min(360px, calc(100vw - 24px));
+  pointer-events: none;
+}
+
+.toast {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--foreground-primary);
+  border: 1px solid var(--background-quaternary, var(--background-secondary));
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.2);
+  pointer-events: auto;
+}
+
+.toast--error {
+  border-color: var(--error-500);
 }

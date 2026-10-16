@@ -12,9 +12,7 @@ describe("isAlias", () => {
     expect(isAlias("{a} + {b}")).toBe(false);
   });
 
-  // Known limitation, to fix with the resolver in phase 1: a serialised
-  // composite value such as {"x":1} matches the alias pattern.
-  it.fails("rejects JSON object strings", () => {
+  it("rejects JSON object strings", () => {
     expect(isAlias('{"x":1}')).toBe(false);
   });
 });

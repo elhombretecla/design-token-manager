@@ -1,6 +1,8 @@
 import "./style.css";
 import { FONT_CATALOG } from "./assets/fontCatalog.generated";
-import type { SerializedSet, SerializedToken, SerializedTheme, AliasPickerSet, PluginMessage, SortKey } from "./shared/types";
+import type { SerializedSet, SerializedToken, SerializedTheme, AliasPickerSet, SortKey } from "./shared/types";
+import type { CatalogSnapshot, Op, OpResult, PluginMessage, SnapshotSet, SnapshotToken, UiMessage } from "./shared/protocol";
+import { Resolver, type ResolveContext } from "./shared/resolver";
 import { esc } from "./utils/esc";
 import { isAlias, parseMixedValue } from "./utils/alias";
 import { hsvToRgb, rgbToHsv, hexToRgb, rgbToHex, rgbToHsl, hslToRgb, parseCssColor } from "./utils/color";
@@ -20,6 +22,7 @@ const CATALOG_MAX_UNFILTERED = 200;
 // ════════════════════════════════════════════════════════════════════════
 
 const state = {
+  snapshot: { sets: [], themes: [] } as CatalogSnapshot,
   sets: [] as SerializedSet[],
   themes: [] as SerializedTheme[],
   tokens: [] as SerializedToken[],
@@ -39,8 +42,7 @@ const compareState = {
   active: false,
   primarySetId: null as string | null,
   comparedSetIds: [] as string[],
-  // O(1) token-by-name lookup per compared set.  Populated when tokens-loaded
-  // arrives for a compared set; cleared on removeComparedSet / exitCompareMode.
+  // O(1) token-by-name lookup per compared set, rebuilt from each snapshot.
   comparedTokenMaps: new Map<string, Map<string, SerializedToken>>(),
 };
 
@@ -170,7 +172,7 @@ function el<T extends HTMLElement>(id: string): T {
 // exists in the plugin sandbox context.  The correct channel is
 // parent.postMessage, which Penpot's host intercepts and forwards to the
 // plugin via penpot.ui.onMessage.
-function sendToPlugin(message: object): void {
+function sendToPlugin(message: UiMessage): void {
   parent.postMessage(message, "*");
 }
 
@@ -267,103 +269,239 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════
-//  MESSAGE HANDLER (plugin.ts → main.ts)
+//  DATA LAYER
+//  The plugin publishes a full CatalogSnapshot whenever the catalog
+//  changes; every view is derived from it here. Values are resolved with
+//  our own Resolver against the context picked in the header, instead of
+//  Penpot's resolvedValue (which only knows about the active sets).
 // ════════════════════════════════════════════════════════════════════════
+
+type ResolveMode = "set-on-top" | "active" | `theme:${string}`;
+const RESOLVE_MODE_KEY = "dtm-resolve-mode";
+
+function loadResolveMode(): ResolveMode {
+  try {
+    const v = localStorage.getItem(RESOLVE_MODE_KEY);
+    if (v === "active" || v === "set-on-top" || v?.startsWith("theme:")) return v as ResolveMode;
+  } catch { /* storage unavailable */ }
+  return "set-on-top";
+}
+
+let resolveMode: ResolveMode = loadResolveMode();
+
+function setResolveMode(mode: ResolveMode): void {
+  resolveMode = mode;
+  try { localStorage.setItem(RESOLVE_MODE_KEY, mode); } catch { /* ignore */ }
+  resolverCache.clear();
+  refreshSelectedTokens();
+}
+
+function contextFor(setId: string): ResolveContext {
+  if (resolveMode === "active") return { kind: "active" };
+  if (resolveMode.startsWith("theme:")) return { kind: "theme", themeId: resolveMode.slice(6) };
+  return { kind: "set-on-top", setId };
+}
+
+// One resolver per (snapshot, mode, viewed set); cleared on every change.
+const resolverCache = new Map<string, Resolver>();
+
+function resolverFor(setId: string): Resolver {
+  const key = resolveMode === "set-on-top" ? `set:${setId}` : resolveMode;
+  let r = resolverCache.get(key);
+  if (!r) {
+    r = Resolver.forContext(state.snapshot, contextFor(setId));
+    resolverCache.set(key, r);
+  }
+  return r;
+}
+
+function toViewToken(token: SnapshotToken, resolver: Resolver): SerializedToken {
+  const r = resolver.resolveToken(token);
+  let resolvedValue = r.value;
+  // In "as in Penpot" mode, prefer Penpot's own result for anything our
+  // evaluator couldn't handle (it has the final word on the canvas).
+  if (resolveMode === "active" && r.status !== "ok" && token.penpotResolved) {
+    resolvedValue = token.penpotResolved;
+  }
+  return {
+    id: token.id,
+    name: token.name,
+    type: token.type,
+    value: token.value,
+    description: token.description,
+    resolvedValue,
+    resolveStatus: r.status,
+    missingRefs: r.missing,
+    resolveError: r.error,
+  };
+}
+
+function snapshotSet(setId: string): SnapshotSet | undefined {
+  return state.snapshot.sets.find((s) => s.id === setId);
+}
+
+function viewTokensForSet(setId: string): SerializedToken[] {
+  const set = snapshotSet(setId);
+  if (!set) return [];
+  const resolver = resolverFor(setId);
+  return set.tokens.map((t) => toViewToken(t, resolver));
+}
+
+function comparedTokenMap(setId: string): Map<string, SerializedToken> {
+  return new Map(viewTokensForSet(setId).map((t) => [t.name, t]));
+}
+
+/** Tokens of one type across all sets, for the alias pickers. */
+function pickerSetsFor(tokenType: string): AliasPickerSet[] {
+  return state.snapshot.sets
+    .map((set) => {
+      const resolver = resolverFor(set.id);
+      return {
+        setId: set.id,
+        setName: set.name,
+        tokens: set.tokens.filter((t) => t.type === tokenType).map((t) => toViewToken(t, resolver)),
+      };
+    })
+    .filter((s) => s.tokens.length > 0);
+}
+
+/** Recompute the selected set's tokens (and compare columns) and re-render. */
+function refreshSelectedTokens(): void {
+  if (!state.selectedSetId) return;
+  state.tokens = viewTokensForSet(state.selectedSetId);
+
+  const validIds = new Set(state.tokens.map((t) => t.id));
+  for (const id of [...selectedTokenIds]) {
+    if (!validIds.has(id)) selectedTokenIds.delete(id);
+  }
+
+  if (compareState.active) {
+    const existing = new Set(state.sets.map((s) => s.id));
+    compareState.comparedSetIds = compareState.comparedSetIds.filter((id) => existing.has(id));
+    compareState.comparedTokenMaps.clear();
+    for (const id of compareState.comparedSetIds) {
+      compareState.comparedTokenMaps.set(id, comparedTokenMap(id));
+    }
+    renderCompareTable();
+  } else {
+    renderTokenTable();
+  }
+}
+
+function applySnapshot(snapshot: CatalogSnapshot): void {
+  state.snapshot = snapshot;
+  resolverCache.clear();
+  state.sets = snapshot.sets.map((s) => ({
+    id: s.id,
+    name: s.name,
+    active: s.active,
+    tokenCount: s.tokens.length,
+  }));
+  state.themes = snapshot.themes.map((t) => ({ ...t, setIds: [...t.setIds] }));
+
+  // A theme picked as context may have been deleted.
+  if (resolveMode.startsWith("theme:") && !state.themes.some((t) => `theme:${t.id}` === resolveMode)) {
+    resolveMode = "set-on-top";
+  }
+
+  renderSidebar();
+  renderOverview();
+  renderContextSelect();
+
+  if (state.selectedSetId && !snapshotSet(state.selectedSetId)) {
+    selectSet(null); // also exits compare mode
+  } else if (state.selectedSetId) {
+    const set = state.sets.find((s) => s.id === state.selectedSetId);
+    if (set) el("breadcrumb-set-name").textContent = set.name;
+    refreshSelectedTokens();
+  }
+
+  // Keep open pickers fresh; only re-render lists that aren't being typed in.
+  if (aliasEditor) {
+    aliasEditor.pickerSets = pickerSetsFor(aliasEditor.compositeCtx?.propType ?? aliasEditor.token.type);
+    if (aliasEditor.mode === "list") renderAliasEditor();
+  }
+  if (modalAliasPicker) {
+    modalAliasPicker.pickerSets = pickerSetsFor(modalAliasPicker.tokenType);
+  }
+}
+
+function renderContextSelect(): void {
+  const select = el<HTMLSelectElement>("resolve-context-select");
+  if (!select) return;
+  const themeOptions = state.themes
+    .map((t) => {
+      const label = t.group ? `${t.group} / ${t.name}` : t.name;
+      return `<option value="theme:${esc(t.id)}">Theme: ${esc(label)}</option>`;
+    })
+    .join("");
+  select.innerHTML = `
+    <option value="set-on-top">This set over active sets</option>
+    <option value="active">Active sets (as in Penpot)</option>
+    ${themeOptions}`;
+  select.value = resolveMode;
+}
+
+// ── Requests ─────────────────────────────────────────────────────────────
+
+const pendingRequests = new Map<number, (results: OpResult[]) => void>();
+let nextReqId = 1;
+
+/** Send operations to the plugin; failures are reported as toasts. */
+function runOps(ops: Op[]): Promise<OpResult[]> {
+  if (ops.length === 0) return Promise.resolve([]);
+  const reqId = nextReqId++;
+  return new Promise<OpResult[]>((resolve) => {
+    pendingRequests.set(reqId, resolve);
+    sendToPlugin({ type: "ops", reqId, ops });
+  }).then((results) => {
+    const failures = results.filter((r) => !r.ok);
+    if (failures.length === 1 && ops.length === 1) {
+      showToast(failures[0].error ?? "The operation failed", "error");
+    } else if (failures.length > 0) {
+      showToast(`${failures.length} of ${ops.length} operations failed: ${failures[0].error ?? ""}`, "error");
+    }
+    return results;
+  });
+}
+
+// ── Toasts ───────────────────────────────────────────────────────────────
+
+function showToast(message: string, kind: "info" | "error" = "info"): void {
+  let region = document.getElementById("toast-region");
+  if (!region) {
+    region = document.createElement("div");
+    region.id = "toast-region";
+    region.className = "toast-region";
+    region.setAttribute("role", "status");
+    region.setAttribute("aria-live", "polite");
+    document.body.appendChild(region);
+  }
+  const toast = document.createElement("div");
+  toast.className = `toast toast--${kind} body-s`;
+  toast.textContent = message;
+  region.appendChild(toast);
+  setTimeout(() => toast.remove(), kind === "error" ? 6000 : 3000);
+}
+
+// ── Messages from the plugin ─────────────────────────────────────────────
 
 window.addEventListener("message", (event: MessageEvent) => {
   const msg = event.data as PluginMessage;
 
-  // Penpot theme change
-  if (msg.type === "themechange") {
-    document.body.dataset.theme = msg.theme;
-    return;
-  }
-
-  switch (msg.type) {
-    case "loaded":
-      state.sets = msg.sets;
-      state.themes = msg.themes;
-      renderSidebar();
-      renderOverview();
+  switch (msg?.type) {
+    case "themechange":
+      document.body.dataset.theme = msg.theme;
       break;
 
-    case "tokens-loaded":
-      if (msg.setId === state.selectedSetId) {
-        state.tokens = msg.tokens;
-        if (compareState.active) {
-          renderCompareTable();
-        } else {
-          renderTokenTable();
-        }
-      } else if (compareState.active && compareState.comparedSetIds.includes(msg.setId)) {
-        // Build O(1) name→token map for the newly loaded compared set.
-        const nameMap = new Map<string, SerializedToken>();
-        for (const t of msg.tokens) nameMap.set(t.name, t);
-        compareState.comparedTokenMaps.set(msg.setId, nameMap);
-        renderCompareTable();
-      }
+    case "snapshot":
+      applySnapshot(msg.snapshot);
       break;
 
-    case "sets-updated":
-      state.sets = msg.sets;
-      state.themes = msg.themes;
-      renderSidebar();
-      renderOverview();
-      // If active set was deleted, go back to overview
-      if (state.selectedSetId && !state.sets.find((s) => s.id === state.selectedSetId)) {
-        selectSet(null); // also exits compare mode via selectSet
-      } else if (state.selectedSetId) {
-        // Refresh breadcrumb name in case it was renamed
-        const set = state.sets.find((s) => s.id === state.selectedSetId);
-        if (set) el("breadcrumb-set-name").textContent = set.name;
-      }
-      // If in compare mode, drop any compared sets that were deleted and
-      // re-render so column headers reflect any renames.
-      if (compareState.active) {
-        const existingIds = new Set(state.sets.map((s) => s.id));
-        const removed = compareState.comparedSetIds.filter((id) => !existingIds.has(id));
-        for (const id of removed) {
-          compareState.comparedSetIds = compareState.comparedSetIds.filter((i) => i !== id);
-          compareState.comparedTokenMaps.delete(id);
-        }
-        renderCompareTable();
-      }
-      break;
-
-    case "tokens-updated":
-      if (msg.setId === state.selectedSetId) {
-        state.tokens = msg.tokens;
-        if (compareState.active) {
-          renderCompareTable();
-          renderSidebar();
-        } else {
-          // Prune selections for tokens that no longer exist
-          const validIds = new Set(msg.tokens.map((t) => t.id));
-          for (const id of [...selectedTokenIds]) {
-            if (!validIds.has(id)) selectedTokenIds.delete(id);
-          }
-          renderTokenTable();
-          renderSidebar();
-        }
-      } else if (compareState.active && compareState.comparedSetIds.includes(msg.setId)) {
-        // Keep a compared set's token map fresh if it receives a push update.
-        const nameMap = new Map<string, SerializedToken>();
-        for (const t of msg.tokens) nameMap.set(t.name, t);
-        compareState.comparedTokenMaps.set(msg.setId, nameMap);
-        renderCompareTable();
-      }
-      break;
-
-    case "all-tokens-by-type-loaded": {
-      const expectedType = aliasEditor?.compositeCtx?.propType ?? aliasEditor?.token.type;
-      if (aliasEditor && msg.tokenType === expectedType) {
-        aliasEditor.pickerSets = msg.sets;
-        renderAliasEditor();
-      }
-      if (modalAliasPicker && msg.tokenType === modalAliasPicker.tokenType) {
-        modalAliasPicker.pickerSets = msg.sets;
-        renderModalAliasPicker();
-      }
+    case "ops-result": {
+      const resolve = pendingRequests.get(msg.reqId);
+      pendingRequests.delete(msg.reqId);
+      resolve?.(msg.results);
       break;
     }
 
@@ -375,7 +513,7 @@ window.addEventListener("message", (event: MessageEvent) => {
       break;
 
     case "error":
-      console.error("[Token Manager]", msg.message);
+      showToast(msg.message, "error");
       break;
 
     case "unsupported":
@@ -407,12 +545,10 @@ function selectSet(setId: string | null): void {
       // Auto-expand all ancestor groups so the selected leaf is visible.
       expandAncestors(set.name);
     }
-    // Clear previous tokens while loading and reset sort to type
-    state.tokens = [];
+    state.tokens = viewTokensForSet(setId);
     state.sortKey = "type";
     state.sortDir = "asc";
     renderTokenTable();
-    sendToPlugin({ type: "get-tokens", setId });
   } else {
     el("view-sets-overview").classList.remove("hidden");
     el("view-tokens").classList.add("hidden");
@@ -733,7 +869,9 @@ function aliasChipHtml(token: SerializedToken): string {
   const swatchHtml = resolvedBg
     ? `<span class="color-swatch" style="background:${esc(resolvedBg)}" aria-hidden="true"></span>`
     : "";
-  return `<div class="alias-chip" data-token-id="${esc(token.id)}" title="${esc(token.value)}" role="button" tabindex="0" aria-label="Alias: ${esc(aliasName)}">${swatchHtml}<span class="alias-chip-name">${esc(aliasName)}</span>${ALIAS_GEAR_ICON}</div>`;
+  const broken = (token.missingRefs ?? []).includes(aliasName.trim());
+  const title = broken ? `Broken reference: ${token.value}` : token.value;
+  return `<div class="alias-chip${broken ? " alias-chip--broken" : ""}" data-token-id="${esc(token.id)}" title="${esc(title)}" role="button" tabindex="0" aria-label="Alias: ${esc(aliasName)}">${swatchHtml}<span class="alias-chip-name">${esc(aliasName)}</span>${ALIAS_GEAR_ICON}</div>`;
 }
 
 function inlineAliasChipHtml(aliasName: string, parentTokenId: string, broken: boolean): string {
@@ -964,6 +1102,17 @@ function compositeShadowPreviewHtml(vals: Record<string, string>, tokenId?: stri
 
 /** Render the "Resolved value" cell, with composite-aware formatting. */
 function resolvedValueCellHtml(token: SerializedToken): string {
+  if (token.resolveStatus === "broken" && token.resolvedValue === undefined) {
+    const missing = (token.missingRefs ?? []).map((n) => `{${n}}`).join(", ");
+    return `<span class="token-resolved-issue" title="${esc(`Not found in this context: ${missing}`)}">Missing ${esc(missing)}</span>`;
+  }
+  if (token.resolveStatus === "cycle" && token.resolvedValue === undefined) {
+    return `<span class="token-resolved-issue" title="These references point back to this token">Circular reference</span>`;
+  }
+  if (token.resolveStatus === "invalid") {
+    const text = token.resolvedValue ?? token.value;
+    return `<span class="token-resolved-text token-resolved-text--warn" title="${esc(token.resolveError ?? "Invalid value")}">${esc(text)}</span>`;
+  }
   const raw = token.resolvedValue ?? token.value;
   if (token.type === "typography") {
     const form = normalizeTypographyValueToForm(raw);
@@ -1028,11 +1177,13 @@ function valueCellHtml(token: SerializedToken): string {
     return `${colorSwatchHtml(token)}<span class="token-value-text" title="${esc(token.value)}">${esc(token.value)}</span>`;
   }
 
-  // Mixed value: one or more {alias} refs alongside plain text / math operators
-  const knownNames = new Set(state.tokens.map((t) => t.name));
+  // Mixed value: one or more {alias} refs alongside plain text / math operators.
+  // "Broken" means missing in the current resolution context, not just in
+  // this set — references to other sets are normal.
+  const missing = new Set(token.missingRefs ?? []);
   const parts = parseMixedValue(token.value).map((seg) => {
     if (seg.kind === "alias") {
-      return inlineAliasChipHtml(seg.name, token.id, !knownNames.has(seg.name));
+      return inlineAliasChipHtml(seg.name, token.id, missing.has(seg.name.trim()));
     }
     return `<span class="mixed-value-text">${esc(seg.content)}</span>`;
   });
@@ -1189,8 +1340,8 @@ function openModalAliasPicker(tokenType: string, anchorEl: HTMLElement, targetIn
   const popover = getOrCreateModalAliasPicker();
   popover.classList.remove("modal-alias-picker--hidden");
   positionModalAliasPicker();
+  modalAliasPicker.pickerSets = pickerSetsFor(tokenType);
   renderModalAliasPicker();
-  sendToPlugin({ type: "get-all-tokens-by-type", tokenType });
 
   setTimeout(() => {
     document.addEventListener("mousedown", onModalAliasPickerOutsideClick, true);
@@ -1371,14 +1522,16 @@ function saveAlias(): void {
   const value = compositeCtx
     ? buildCompositeValueWithProp(token, compositeCtx.propKey, inputValue.trim())
     : inputValue;
-  sendToPlugin({
-    type: "update-token",
-    setId: state.selectedSetId,
-    tokenId: token.id,
-    name: token.name,
-    value,
-    description: token.description,
-  });
+  if (state.selectedSetId) {
+    void runOps([{
+      op: "update-token",
+      setId: state.selectedSetId,
+      tokenId: token.id,
+      name: token.name,
+      value,
+      description: token.description,
+    }]);
+  }
   closeAliasEditor();
 }
 
@@ -1401,7 +1554,6 @@ function buildAliasPickerListHtml(
     })
     .filter((s) => s.tokens.length > 0);
 
-  if (pickerSets.length === 0) return `<div class="alias-picker-empty">Loading…</div>`;
   if (filtered.length === 0)   return `<div class="alias-picker-empty">No tokens found</div>`;
 
   const chevRight = `<svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m6 4 4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
@@ -1467,10 +1619,7 @@ function renderAliasEditor(): void {
     popover.querySelector("#ae-toggle")?.addEventListener("click", () => {
       if (!aliasEditor) return;
       aliasEditor.mode = "list";
-      if (aliasEditor.pickerSets.length === 0) {
-        const tokenType = aliasEditor.compositeCtx?.propType ?? aliasEditor.token.type;
-        sendToPlugin({ type: "get-all-tokens-by-type", tokenType });
-      }
+      aliasEditor.pickerSets = pickerSetsFor(aliasEditor.compositeCtx?.propType ?? aliasEditor.token.type);
       renderAliasEditor();
     });
     popover.querySelector("#ae-cancel")?.addEventListener("click", closeAliasEditor);
@@ -1772,7 +1921,7 @@ function showSetContextMenu(e: MouseEvent, setId: string): void {
     {
       label: "Duplicate",
       icon: ICON_DUPLICATE,
-      action: () => sendToPlugin({ type: "duplicate-set", setId }),
+      action: () => void runOps([{ op: "duplicate-set", setId }]),
     },
     {
       label: "Delete",
@@ -1806,11 +1955,7 @@ function showTokenContextMenu(e: MouseEvent, token: SerializedToken): void {
       icon: ICON_DUPLICATE,
       action: () => {
         if (state.selectedSetId) {
-          sendToPlugin({
-            type: "duplicate-token",
-            setId: state.selectedSetId,
-            tokenId: token.id,
-          });
+          void runOps([{ op: "duplicate-token", setId: state.selectedSetId, tokenId: token.id }]);
         }
       },
     },
@@ -1898,7 +2043,7 @@ function showNewSetModal(): void {
   const doCreate = () => {
     const name = nameInput.value.trim();
     if (!name) { nameInput.classList.add("error"); return; }
-    sendToPlugin({ type: "create-set", name });
+    void runOps([{ op: "create-set", name }]);
     closeModal();
   };
 
@@ -1937,7 +2082,7 @@ function showRenameSetModal(set: SerializedSet): void {
   const doRename = () => {
     const newName = input.value.trim();
     if (!newName || newName === set.name) { closeModal(); return; }
-    sendToPlugin({ type: "rename-set", setId: set.id, newName });
+    void runOps([{ op: "rename-set", setId: set.id, newName }]);
     closeModal();
   };
 
@@ -1971,7 +2116,7 @@ function showDeleteSetConfirm(set: SerializedSet): void {
     </div>`);
 
   el("confirm-delete-set-btn").addEventListener("click", () => {
-    sendToPlugin({ type: "delete-set", setId: set.id });
+    void runOps([{ op: "delete-set", setId: set.id }]);
     if (state.selectedSetId === set.id) selectSet(null);
     closeModal();
   });
@@ -2000,11 +2145,7 @@ function showDeleteTokenConfirm(token: SerializedToken): void {
 
   el("confirm-delete-token-btn").addEventListener("click", () => {
     if (state.selectedSetId) {
-      sendToPlugin({
-        type: "delete-token",
-        setId: state.selectedSetId,
-        tokenId: token.id,
-      });
+      void runOps([{ op: "delete-token", setId: state.selectedSetId, tokenId: token.id }]);
     }
     closeModal();
   });
@@ -2046,13 +2187,9 @@ function showMoveTokenModal(token: SerializedToken): void {
     const toSetId = el<HTMLSelectElement>("move-token-target").value;
     const copy = el<HTMLInputElement>("move-token-copy").checked;
     if (!toSetId || !state.selectedSetId) return;
-    sendToPlugin({
-      type: "move-token",
-      fromSetId: state.selectedSetId,
-      tokenId: token.id,
-      toSetId,
-      copy,
-    });
+    if (state.selectedSetId) {
+      void runOps([{ op: "move-token", fromSetId: state.selectedSetId, tokenId: token.id, toSetId, copy }]);
+    }
     closeModal();
   });
 }
@@ -2738,14 +2875,14 @@ function showNewTokenModal(initialType = "color"): void {
     }
 
     if (state.selectedSetId) {
-      sendToPlugin({
-        type: "create-token",
+      void runOps([{
+        op: "create-token",
         setId: state.selectedSetId,
         tokenType: type,
         name,
         value,
         description,
-      });
+      }]);
     }
     closeModal();
   });
@@ -2805,14 +2942,14 @@ function showEditTokenModal(token: SerializedToken): void {
 
     if (!name) return;
     if (state.selectedSetId) {
-      sendToPlugin({
-        type: "update-token",
+      void runOps([{
+        op: "update-token",
         setId: state.selectedSetId,
         tokenId: token.id,
         name,
         value,
         description,
-      });
+      }]);
     }
     closeModal();
   });
@@ -2899,9 +3036,7 @@ function handleBulkMove(ids: Set<string>): void {
     const toSetId = el<HTMLSelectElement>("bulk-move-target").value;
     const copy = el<HTMLInputElement>("bulk-move-copy").checked;
     if (!toSetId) return;
-    ids.forEach((tokenId) =>
-      sendToPlugin({ type: "move-token", fromSetId, tokenId, toSetId, copy })
-    );
+    void runOps([...ids].map((tokenId) => ({ op: "move-token" as const, fromSetId, tokenId, toSetId, copy })));
     selectedTokenIds.clear();
     closeModal();
   });
@@ -2912,9 +3047,7 @@ function handleBulkDuplicate(ids: Set<string>): void {
   const setId = state.selectedSetId;
   // Each message carries only the tokenId; the plugin fetches live data from
   // the Penpot API so composite values (shadow, typography) are never stale.
-  ids.forEach((tokenId) => {
-    sendToPlugin({ type: "duplicate-token", setId, tokenId });
-  });
+  void runOps([...ids].map((tokenId) => ({ op: "duplicate-token" as const, setId, tokenId })));
   selectedTokenIds.clear();
   renderBulkBar();
 }
@@ -2942,7 +3075,7 @@ function handleBulkDelete(ids: Set<string>): void {
     </div>`);
 
   el("confirm-bulk-delete-btn").addEventListener("click", () => {
-    ids.forEach((tokenId) => sendToPlugin({ type: "delete-token", setId, tokenId }));
+    void runOps([...ids].map((tokenId) => ({ op: "delete-token" as const, setId, tokenId })));
     selectedTokenIds.clear();
     closeModal();
   });
@@ -3064,7 +3197,7 @@ function showMathInfoModal(): void {
 //                             the token table (used internally before another
 //                             render is about to happen anyway).
 //  exitCompareMode()        – same + calls renderTokenTable() to restore normal view.
-//  addComparedSet(setId)    – appends a compared column; requests tokens from plugin.
+//  addComparedSet(setId)    – appends a compared column (built from the snapshot).
 //  removeComparedSet(setId) – removes a compared column.
 //  renderCompareTable()     – full render of compare header + body.
 //  valueCellHtmlReadOnly()  – non-interactive variant of valueCellHtml (no alias editor).
@@ -3162,39 +3295,52 @@ function renderCompareTable(): void {
     addBtn.addEventListener("click", (e) => showAddSetDropdown(e as MouseEvent));
   }
 
-  // ── Body ────────────────────────────────────────────────────────────────
+  // ── Body ──────────────────────────────────────────────────────────────
+  // Rows are the union of names across all compared sets: the primary set's
+  // tokens first (in table order), then names that only exist elsewhere.
   const primaryTokens = getSortedTokens(state.tokens);
+  const primaryByName = new Map(primaryTokens.map((t) => [t.name, t]));
+  const extraNames = new Set<string>();
+  for (const map of compareState.comparedTokenMaps.values()) {
+    for (const name of map.keys()) if (!primaryByName.has(name)) extraNames.add(name);
+  }
+  const names = [...primaryTokens.map((t) => t.name), ...[...extraNames].sort()];
 
-  if (primaryTokens.length === 0) {
+  if (names.length === 0) {
     bodyEl.innerHTML = `<div class="empty-state-msg body-s">No tokens yet.</div>`;
     return;
   }
 
-  const rows = primaryTokens
-    .map((token) => {
-      const comparedCells = compareState.comparedSetIds
-        .map((setId) => {
-          const tokenMap = compareState.comparedTokenMaps.get(setId);
-          if (!tokenMap) {
-            // Tokens still loading for this set
-            return `<div class="cmp-td cmp-td-loading">—</div>`;
-          }
-          const compToken = tokenMap.get(token.name);
-          if (!compToken) {
-            return `<div class="cmp-td cmp-td-missing">No tokens with the same name in this set.</div>`;
-          }
-          return `<div class="cmp-td"><div class="col-value-inner">${valueCellHtmlReadOnly(compToken)}</div></div>`;
-        })
-        .join("");
+  const compareKey = (t: SerializedToken) => t.resolvedValue ?? t.value;
 
-      return `<div class="cmp-row" role="row">
+  const cellHtml = (token: SerializedToken | undefined, diff: boolean): string => {
+    if (!token) return `<div class="cmp-td cmp-td-missing">Not in this set</div>`;
+    const showResolved =
+      token.resolveStatus !== "ok" ||
+      (token.resolvedValue !== undefined && token.resolvedValue !== token.value);
+    const resolved = showResolved
+      ? `<div class="cmp-resolved">${resolvedValueCellHtml(token)}</div>`
+      : "";
+    return `<div class="cmp-td${diff ? " cmp-td--diff" : ""}">` +
+      `<div class="col-value-inner">${valueCellHtmlReadOnly(token)}</div>${resolved}</div>`;
+  };
+
+  const rows = names
+    .map((name) => {
+      const primary = primaryByName.get(name);
+      const compared = compareState.comparedSetIds.map(
+        (setId) => compareState.comparedTokenMaps.get(setId)?.get(name),
+      );
+      const baseKey = primary ? compareKey(primary) : undefined;
+      const cellDiff = compared.map((t) => !t || !primary || compareKey(t) !== baseKey);
+      const rowDiff = !primary || cellDiff.some(Boolean);
+
+      return `<div class="cmp-row${rowDiff ? " cmp-row--diff" : ""}" role="row">
         <div class="cmp-td cmp-td-name">
-          <span class="col-name-text" title="${esc(token.name)}">${esc(token.name)}</span>
+          <span class="col-name-text" title="${esc(name)}">${esc(name)}</span>
         </div>
-        <div class="cmp-td">
-          <div class="col-value-inner">${valueCellHtmlReadOnly(token)}</div>
-        </div>
-        ${comparedCells}
+        ${cellHtml(primary, false)}
+        ${compared.map((t, idx) => cellHtml(t, cellDiff[idx])).join("")}
         <div class="cmp-td"></div>
       </div>`;
     })
@@ -3287,10 +3433,8 @@ function enterCompareMode(primarySetId: string): void {
 function addComparedSet(setId: string): void {
   if (compareState.comparedSetIds.includes(setId)) return;
   compareState.comparedSetIds.push(setId);
-  // Tokens will arrive via the tokens-loaded message handler which will
-  // call renderCompareTable() once the name-map is built.
-  sendToPlugin({ type: "get-tokens", setId });
-  renderCompareTable(); // show the loading placeholder immediately
+  compareState.comparedTokenMaps.set(setId, comparedTokenMap(setId));
+  renderCompareTable();
 }
 
 /** Remove a compared-set column. */
@@ -3338,6 +3482,11 @@ function bindGlobalListeners(): void {
 
   // Token search
   el("tokens-search-input")?.addEventListener("input", renderTokenTable);
+
+  // Resolution context
+  el<HTMLSelectElement>("resolve-context-select")?.addEventListener("change", (e) => {
+    setResolveMode((e.target as HTMLSelectElement).value as ResolveMode);
+  });
 
   // Set "more" button (show context menu)
   el("set-more-btn")?.addEventListener("click", (e) => {
