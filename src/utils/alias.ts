@@ -9,7 +9,8 @@
  */
 
 // Matches an entire string that is exactly one alias reference: `{foo.bar}`.
-const ALIAS_RE = /^\{[^{}]+\}$/;
+// Quotes are excluded so serialised composites such as {"x":1} don't match.
+const ALIAS_RE = /^\{[^{}"]+\}$/;
 
 /** Returns true when the value is a bare alias reference: `{some.token}`. */
 export function isAlias(value: string): boolean {
@@ -41,4 +42,21 @@ export function parseMixedValue(value: string): MixedSegment[] {
     }
   }
   return segments;
+}
+
+// ── Reference search / replace ────────────────────────────────────────────
+
+function refPattern(name: string): RegExp {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\{\\s*${escaped}\\s*\\}`, "g");
+}
+
+/** True when `value` contains a `{name}` reference (exact name, not a prefix). */
+export function referencesName(value: string, name: string): boolean {
+  return refPattern(name).test(value);
+}
+
+/** Replace every `{oldName}` reference in `value` with `{newName}`. */
+export function replaceReference(value: string, oldName: string, newName: string): string {
+  return value.replace(refPattern(oldName), `{${newName}}`);
 }

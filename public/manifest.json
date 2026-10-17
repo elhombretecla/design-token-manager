@@ -1,13 +1,16 @@
 {
   "name": "Design Token Manager",
-  "code": "plugin.js",
-  "icon": "/icon.png",
   "description": "A comprehensive Design Token Manager for Penpot. Create, edit, and organize token sets, tokens, and themes.",
+  "version": 2,
+  "code": "plugin.js",
+  "icon": "icon.png",
   "host": "https://design-token-manager.pages.dev",
   "permissions": [
     "content:read",
     "content:write",
     "library:read",
-    "library:write"
+    "library:write",
+    "allow:downloads",
+    "clipboard:write"
   ]
 }

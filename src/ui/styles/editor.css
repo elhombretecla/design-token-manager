@@ -1,0 +1,75 @@
+/* ════════════════════════════════════════════════════════════════════════
+   TOKEN EDITOR & PICKERS (v2 phase 4, Preact)
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* The editor is a <form> wrapping header/body/footer; keep the modal's
+   flex layout as if the form weren't there. */
+.modal-form {
+  display: contents;
+}
+
+.form-error {
+  margin: 4px 0 0;
+  color: var(--error-500);
+}
+
+/* Font picker dropdown (was #font-picker-dropdown) */
+.fp-dropdown {
+  position: fixed;
+  z-index: 870;
+  background-color: var(--background-primary);
+  border: 1px solid var(--background-quaternary);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+  overflow-y: auto;
+  max-height: 260px;
+}
+
+.fp-item.is-highlighted {
+  background-color: var(--background-tertiary);
+  color: var(--accent-primary);
+}
+
+/* Alias picker items are keyboard-focusable */
+.alias-picker-item:focus-visible,
+.alias-picker-group-label:focus-visible {
+  outline: none;
+  background-color: var(--background-tertiary);
+  color: var(--accent-primary);
+}
+
+/* The swatch is a button that opens the color picker */
+.color-swatch-btn {
+  pointer-events: auto;
+  cursor: pointer;
+  padding: 0;
+}
+
+.color-swatch-btn:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 1px;
+}
+
+.cp-track:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+/* Shadow type radios (fieldset instead of a div) */
+.shadow-type-field {
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.shadow-type-field > legend {
+  padding: 0;
+  margin-bottom: 4px;
+}
+
+.shadow-type-options {
+  display: flex;
+  gap: 14px;
+  margin-top: 2px;
+}

@@ -12,6 +12,11 @@ export default defineConfig({
       },
     }),
   ],
+  // Preact's automatic JSX runtime (also set in tsconfig for type checking).
+  esbuild: {
+    jsx: "automatic",
+    jsxImportSource: "preact",
+  },
   build: {
     rollupOptions: {
       input: {
