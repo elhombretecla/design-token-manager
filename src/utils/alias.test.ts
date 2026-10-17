@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAlias, parseMixedValue } from "./alias";
+import { isAlias, parseMixedValue, referencesName, replaceReference } from "./alias";
 
 describe("isAlias", () => {
   it("detects a bare reference", () => {
@@ -31,5 +31,19 @@ describe("parseMixedValue", () => {
       { kind: "alias", name: "a" },
       { kind: "alias", name: "b" },
     ]);
+  });
+});
+
+describe("references", () => {
+  it("matches exact names only", () => {
+    expect(referencesName("{color.blue}", "color.blue")).toBe(true);
+    expect(referencesName("{ color.blue }", "color.blue")).toBe(true);
+    expect(referencesName("{color.blue.dark}", "color.blue")).toBe(false);
+    expect(referencesName("{colorXblue}", "color.blue")).toBe(false);
+  });
+
+  it("replaces every occurrence, including inside composite JSON", () => {
+    expect(replaceReference("{a} + {a} * {ab}", "a", "b")).toBe("{b} + {b} * {ab}");
+    expect(replaceReference('{"color":"{c.x}","y":"{s}"}', "c.x", "c.y")).toBe('{"color":"{c.y}","y":"{s}"}');
   });
 });

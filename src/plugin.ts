@@ -211,20 +211,8 @@ const SHADOW_KEY_VARIANTS: ReadonlyArray<readonly [string, string]> = [
   ["color",     "color"],
 ] as const;
 
-function serializeShadowValue(rawValue: unknown): string {
-  if (rawValue == null)             return "";
-  if (typeof rawValue === "string") return rawValue;
-
-  // Both value and resolvedValue are plain JS arrays — take the first element.
-  let src: unknown = rawValue;
-  if (Array.isArray(rawValue)) {
-    if (rawValue.length === 0) return "";
-    src = rawValue[0];
-    if (src === null)              return "";
-    if (typeof src === "string")   return src; // alias string stored in array
-    if (typeof src !== "object")   return "";
-  }
-
+// One shadow layer (a plain object or a CLJS proxy) → plain UI-form object.
+function serializeShadowLayer(src: object): Record<string, unknown> {
   const obj = src as Record<string, unknown>;
   const out: Record<string, unknown> = {};
 
@@ -261,8 +249,33 @@ function serializeShadowValue(rawValue: unknown): string {
     } catch { /* skip */ }
   }
 
-  if (Object.keys(out).length > 0) {
-    return JSON.stringify(out);
+  return out;
+}
+
+// Shadow values are arrays of layers. The UI form is a single JSON object
+// for one layer (the common case) and a JSON array for several.
+function shadowLayersToString(layers: Record<string, unknown>[]): string {
+  const nonEmpty = layers.filter((l) => Object.keys(l).length > 0);
+  if (nonEmpty.length === 0) return "";
+  return JSON.stringify(nonEmpty.length === 1 ? nonEmpty[0] : nonEmpty);
+}
+
+function serializeShadowValue(rawValue: unknown): string {
+  if (rawValue == null)             return "";
+  if (typeof rawValue === "string") return rawValue;
+
+  if (Array.isArray(rawValue)) {
+    if (rawValue.length === 0) return "";
+    if (typeof rawValue[0] === "string") return rawValue[0]; // alias string stored in array
+    const layers = rawValue
+      .filter((l): l is object => typeof l === "object" && l !== null)
+      .map(serializeShadowLayer);
+    return shadowLayersToString(layers);
+  }
+
+  if (typeof rawValue === "object") {
+    const str = shadowLayersToString([serializeShadowLayer(rawValue)]);
+    if (str) return str;
   }
 
   try { return JSON.stringify(rawValue) ?? ""; } catch { return ""; }
@@ -431,31 +444,18 @@ function serializeShadowResolvedValue(raw: unknown): string {
 
   // 1. Plain JS array: TokenShadowValue[] in newer Penpot builds.
   if (Array.isArray(raw) && raw.length > 0) {
-    const first = raw[0];
-    if (typeof first === "string") return first;
-    if (typeof first === "object" && first !== null) {
-      // Reuse the shadow serializer to keep `color` extraction/probing
-      // consistent with token.value serialisation.
-      const str = serializeShadowValue(first);
-      if (str && str !== "{}") return str;
-    }
+    const str = serializeShadowValue(raw);
+    if (str && str !== "{}") return str;
   }
 
-  // 2. CLJS PersistentVector: try $tail$[0] first.
-  //    The inner element is a CLJS proxy — not enumerable via JSON.stringify,
-  //    but its fields (inset, offsetX, color…) may be readable by direct key
-  //    access.  If $tail$[0] yields nothing useful ("{}"), fall through to
-  //    step 3 so the outer PV can be tried.
+  // 2. CLJS PersistentVector: its layers live in $tail$ as proxies whose
+  //    fields are readable by key but not enumerable.
   if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const tail = (raw as any)["$tail$"];
     if (Array.isArray(tail) && tail.length > 0) {
-      const inner = tail[0];
-      if (inner !== null && typeof inner === "object") {
-        const rv = serializeShadowValue(inner);
-        if (rv && rv !== "{}") return rv;
-        // inner proxy was empty — fall through to step 3
-      }
+      const str = serializeShadowValue(tail);
+      if (str && str !== "{}") return str;
     }
   }
 
@@ -477,23 +477,29 @@ function fontFamilyValueForApi(value: string): string | string[] {
 }
 
 // Shadow tokens must be written as TokenShadowValueString[] (an array).
-// The UI always sends { type, x, y, blur, spread, color } — convert to
-// [{ inset, offsetX, offsetY, blur, spread, color }] before writing to Penpot.
-// Alias strings and values already in array form pass through unchanged.
-function shadowValueForApi(val: unknown): unknown {
-  if (typeof val === "string") return val;   // alias reference → pass through
-  if (Array.isArray(val))      return val;   // already array format → pass through
-  if (typeof val !== "object" || val === null) return val;
-
-  const obj = val as Record<string, unknown>;
-  return [{
-    inset:   obj.type === "inner-shadow",
+// The UI sends one layer as { type, x, y, blur, spread, color } or several
+// as an array of those; each becomes { inset, offsetX, offsetY, … }.
+// Alias strings pass through unchanged.
+function shadowLayerForApi(obj: Record<string, unknown>): Record<string, unknown> {
+  return {
+    inset:   obj.type === "inner-shadow" || obj.inset === true || obj.inset === "true",
     offsetX: obj.x      ?? obj.offsetX ?? "0",
     offsetY: obj.y      ?? obj.offsetY ?? "0",
     blur:    obj.blur   ?? "0",
     spread:  obj.spread ?? "0",
     color:   obj.color  ?? "rgba(0,0,0,0.25)",
-  }];
+  };
+}
+
+function shadowValueForApi(val: unknown): unknown {
+  if (typeof val === "string") return val;   // alias reference → pass through
+  if (Array.isArray(val)) {
+    return val.map((l) =>
+      typeof l === "object" && l !== null ? shadowLayerForApi(l as Record<string, unknown>) : l,
+    );
+  }
+  if (typeof val !== "object" || val === null) return val;
+  return [shadowLayerForApi(val as Record<string, unknown>)];
 }
 
 // Within a typography token value, the `fontFamilies` field follows the same
@@ -533,6 +539,18 @@ function tryParseObject(value: string): string | object {
   return value ?? "";
 }
 
+// Multi-layer shadows arrive from the UI as a JSON array string.
+function parseShadowLayers(raw: string): unknown[] | null {
+  const s = (raw ?? "").trim();
+  if (!s.startsWith("[") || !s.endsWith("]")) return null;
+  try {
+    const parsed: unknown = JSON.parse(s);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 // Convert the UI's string form of a value into what the API expects:
 //   • fontFamilies — [:vector :text]: wrap plain names in an array.
 //   • typography   — JSON object; fontFamilies field wrapped in an array.
@@ -542,7 +560,7 @@ function valueForApi(type: string, raw: string): TokenValueString {
   if (type === "fontFamilies") return fontFamilyValueForApi(raw);
   const parsed = tryParseObject(raw);
   if (type === "typography") return normalizeTypographyFontFamilies(parsed) as TokenValueString;
-  if (type === "shadow") return shadowValueForApi(parsed) as TokenValueString;
+  if (type === "shadow") return shadowValueForApi(parseShadowLayers(raw) ?? parsed) as TokenValueString;
   return parsed as TokenValueString;
 }
 
@@ -702,6 +720,12 @@ function requireToken(set: TokenSet, tokenId: string): Token {
   return token;
 }
 
+function requireTheme(cat: TokenCatalog, themeId: string): TokenTheme {
+  const theme = cat.getThemeById(themeId);
+  if (!theme) throw new Error(`Theme not found: ${themeId}`);
+  return theme;
+}
+
 // `addToken` doesn't take a description; set it once the engine settled.
 async function addTokenWithDescription(
   set: TokenSet,
@@ -775,17 +799,59 @@ async function runOp(cat: TokenCatalog, op: Op): Promise<void> {
       const fromSet = requireSet(cat, op.fromSetId);
       const toSet = requireSet(cat, op.toSetId);
       const token = requireToken(fromSet, op.tokenId);
-      if (toSet.tokens.some((t) => t.name === token.name)) {
-        throw new Error(`"${toSet.name}" already has a token named "${token.name}"`);
+      const targetName = op.newName ?? token.name;
+      if (toSet.tokens.some((t) => t.name === targetName)) {
+        throw new Error(`"${toSet.name}" already has a token named "${targetName}"`);
       }
       // Pass the live value (object for shadow/typography) rather than a
       // stringified copy: Penpot reads a "{…}" string as an alias reference.
       await addTokenWithDescription(toSet, {
         type: token.type,
-        name: token.name,
+        name: targetName,
         value: cloneTokenValue(token.value),
       }, token.description ?? "");
       if (!op.copy) token.remove();
+      return;
+    }
+
+    // Note: toggling a set directly makes Penpot disable all themes
+    // (the file switches to a "custom" combination of sets).
+    case "set-set-active":
+      requireSet(cat, op.setId).active = op.active;
+      return;
+
+    case "create-theme": {
+      const theme = cat.addTheme({ group: op.group, name: op.name });
+      for (const setId of op.setIds ?? []) theme.addSet(setId);
+      return;
+    }
+
+    case "update-theme": {
+      const theme = requireTheme(cat, op.themeId);
+      if (theme.group !== op.group) theme.group = op.group;
+      if (theme.name !== op.name) theme.name = op.name;
+      return;
+    }
+
+    case "duplicate-theme":
+      requireTheme(cat, op.themeId).duplicate();
+      return;
+
+    case "delete-theme":
+      requireTheme(cat, op.themeId).remove();
+      return;
+
+    // Penpot keeps at most one active theme per group.
+    case "set-theme-active":
+      requireTheme(cat, op.themeId).active = op.active;
+      return;
+
+    case "set-theme-sets": {
+      const theme = requireTheme(cat, op.themeId);
+      const wanted = new Set(op.setIds);
+      const current = new Set(theme.activeSets.map((s) => s.id));
+      for (const id of current) if (!wanted.has(id)) theme.removeSet(id);
+      for (const id of wanted) if (!current.has(id)) theme.addSet(id);
       return;
     }
   }

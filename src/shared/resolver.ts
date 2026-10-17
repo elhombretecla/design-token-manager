@@ -120,10 +120,30 @@ export class Resolver {
 
   private resolveValue(type: string, value: string, stack: Set<string>): Resolution {
     if (COMPOSITE_TYPES.has(type)) {
-      const fields = parseObject(value);
-      if (fields) return this.resolveComposite(fields, stack);
+      const parsed = parseComposite(value);
+      if (Array.isArray(parsed)) return this.resolveLayers(parsed, stack);
+      if (parsed) return this.resolveComposite(parsed, stack);
     }
     return this.resolveString(value, stack);
+  }
+
+  /** Multi-layer composites (shadows): resolve each layer, keep the array. */
+  private resolveLayers(layers: Record<string, unknown>[], stack: Set<string>): Resolution {
+    const out: unknown[] = [];
+    const missing: string[] = [];
+    let status = "ok" as ResolutionStatus;
+    let error: string | undefined;
+    for (const layer of layers) {
+      const r = this.resolveComposite(layer, stack);
+      missing.push(...r.missing);
+      status = worse(status, r.status);
+      error ??= r.error;
+      out.push(r.value ? JSON.parse(r.value) : layer);
+    }
+    if (status === "broken" || status === "cycle") {
+      return { status, missing: unique(missing), error };
+    }
+    return { value: JSON.stringify(out), status, missing: [], error };
   }
 
   private resolveComposite(fields: Record<string, unknown>, stack: Set<string>): Resolution {
@@ -199,14 +219,22 @@ function unique(xs: string[]): string[] {
   return [...new Set(xs)];
 }
 
-function parseObject(value: string): Record<string, unknown> | null {
+type CompositeValue = Record<string, unknown> | Record<string, unknown>[];
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Parse a composite's JSON form: one object, or an array of objects (layers). */
+function parseComposite(value: string): CompositeValue | null {
   const s = value.trim();
-  if (!s.startsWith("{") || !s.endsWith("}")) return null;
+  const looksJson = (s.startsWith("{") && s.endsWith("}")) || (s.startsWith("[") && s.endsWith("]"));
+  if (!looksJson) return null;
   try {
     const parsed: unknown = JSON.parse(s);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
+    if (isPlainObject(parsed)) return parsed;
+    if (Array.isArray(parsed) && parsed.every(isPlainObject)) return parsed;
+    return null;
   } catch {
     return null; // a reference like {typo.body}, not JSON
   }

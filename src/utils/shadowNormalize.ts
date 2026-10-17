@@ -67,12 +67,34 @@ export function extractShadowColorString(val: unknown): string | undefined {
  * Values are kept as strings; aliases stay intact ("{color.xxx}").
  */
 export function normalizeShadowValueToPreview(raw: string): Record<string, string> {
-  if (!raw) return {};
+  return normalizeShadowLayers(raw)[0] ?? {};
+}
+
+/**
+ * All layers of a shadow value. One layer is stored as a JSON object, several
+ * as a JSON array of objects. Aliases and unparseable input yield [].
+ */
+export function normalizeShadowLayers(raw: string): Record<string, string>[] {
+  if (!raw) return [];
   const s = raw.trim();
-  if (!s.startsWith("{") || !s.endsWith("}")) return {};
+  const isObj = s.startsWith("{") && s.endsWith("}");
+  const isArr = s.startsWith("[") && s.endsWith("]");
+  if (!isObj && !isArr) return [];
 
   let parsed: unknown;
-  try { parsed = JSON.parse(s); } catch { return {}; }
+  try { parsed = JSON.parse(s); } catch { return []; }
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+  return items
+    .map(normalizeShadowLayer)
+    .filter((l) => Object.keys(l).length > 0);
+}
+
+/** Serialise layers back to the UI wire form (object for one, array for many). */
+export function shadowLayersToValue(layers: Record<string, string>[]): string {
+  return JSON.stringify(layers.length === 1 ? layers[0] : layers);
+}
+
+function normalizeShadowLayer(parsed: unknown): Record<string, string> {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
 
   // Flatten ClojureScript/Transit maps into plain JS objects

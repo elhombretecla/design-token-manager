@@ -8,13 +8,16 @@ A full-featured design token manager plugin for Penpot. Create, organize, and ma
 
 - **Token Sets**: Create and manage multiple token sets, organized in groups using `/` separators
 - **Token Types**: Support for Color, Border Radius, Dimension, Font Family, Font Size, Font Weight, Letter Spacing, Number, Opacity, Rotation, Shadow, Sizing, Spacing, Stroke Width, Text Case, Text Decoration, and Typography
-- **Themes**: Create and manage token themes to switch between design modes (e.g. light/dark)
+- **Themes**: Create, rename, duplicate and delete themes, pick the sets each one enables, and activate them from the sidebar (one per group)
+- **Active sets**: Toggle which sets are active in Penpot straight from the sidebar
 - **Resolution context**: Resolved values are computed by the plugin (aliases + math), against the viewed set on top of the active sets, the active sets as Penpot sees them, or any theme — so inactive sets show their real values
 - **Aliases**: Reference other tokens by value using `{token.name}` syntax, with an inline alias picker
 - **Color Picker**: Built-in color picker with HEX, RGB and HSL modes for color tokens
 - **Token Search**: Filter tokens by name, type or value within any set
 - **Live sync**: Changes made outside the plugin (Penpot's tokens panel, undo, collaborators) are picked up automatically
-- **Bulk Actions**: Select multiple tokens and move or duplicate them across sets in one action
+- **Bulk Actions**: Select multiple tokens and move, duplicate or delete them in one action, with name-conflict handling (skip, keep both, replace)
+- **Safe renames**: Renaming or deleting a token shows which tokens reference it, and renames can update those references
+- **Multi-layer shadows**: Edit every layer of a shadow token
 - **Sortable Table**: Sort tokens by name, value, resolved value or type
 - **Penpot Theme Sync**: Automatically adapts to Penpot's light and dark theme
 

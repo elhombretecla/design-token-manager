@@ -1249,6 +1249,31 @@ html.col-resizing * {
   display: none;
 }
 
+/* Shadow layers */
+.shadow-layer + .shadow-layer {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--background-tertiary);
+}
+
+.shadow-layer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.shadow-add-layer-btn {
+  margin-top: 10px;
+  align-self: flex-start;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent-primary);
+  font-size: var(--font-size-s);
+  cursor: pointer;
+}
+
 /* Shadow multi-field grid */
 .shadow-grid {
   display: grid;
@@ -1992,4 +2017,215 @@ html.col-resizing * {
 
 .toast--error {
   border-color: var(--error-500);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   SET ACTIVE TOGGLES & THEMES (v2 phase 2)
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* plugin-styles only resets checkboxes inside .checkbox-container; outside
+   one (sidebar toggles, table row checks) the browser's native blue box
+   showed. Apply Penpot's checkbox everywhere; colours come from the
+   [data-theme] rules in plugin-styles (accent-primary when checked). */
+.checkbox-input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  inline-size: var(--spacing-16);
+  block-size: var(--spacing-16);
+  margin: 0;
+  border-radius: var(--spacing-4);
+  box-sizing: border-box;
+  cursor: pointer;
+  position: relative;
+  transition: 0.12s all ease-in-out;
+}
+
+.checkbox-input[type="checkbox"]::after {
+  content: "";
+  display: flex;
+  inline-size: 5px;
+  block-size: 8px;
+  margin-block-start: 2px;
+  margin-inline-start: 5px;
+  border-style: solid;
+  border-width: 0;
+  transform: rotate(45deg);
+}
+
+.checkbox-input[type="checkbox"]:checked {
+  background-color: var(--accent-primary);
+  border: 1px solid var(--accent-primary);
+}
+
+.checkbox-input[type="checkbox"]:checked::after {
+  border-color: var(--background-primary);
+  border-width: 0 2px 2px 0;
+}
+
+.checkbox-input[type="checkbox"]:focus-visible {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: 1px;
+}
+
+.set-active-toggle {
+  margin-left: auto;
+}
+
+.theme-group-label {
+  padding: 6px 10px 2px;
+  color: var(--foreground-secondary);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.theme-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--foreground-secondary);
+}
+
+.theme-item--active .theme-dot,
+.theme-dot--active {
+  border-color: var(--accent-primary);
+  background: var(--accent-primary);
+}
+
+.theme-item--active .set-name {
+  color: var(--foreground-primary);
+}
+
+/* Themes modal */
+.themes-modal {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) 1fr;
+  gap: 16px;
+  min-height: 320px;
+}
+
+.themes-modal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-right: 1px solid var(--background-tertiary);
+  padding-right: 12px;
+  overflow-y: auto;
+}
+
+.themes-modal-group-label {
+  color: var(--foreground-secondary);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+
+.themes-modal-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--foreground-secondary);
+  font-size: var(--font-size-s);
+  text-align: left;
+  cursor: pointer;
+}
+
+.themes-modal-item:hover,
+.themes-modal-item.is-selected {
+  background: var(--background-tertiary);
+  color: var(--foreground-primary);
+}
+
+.themes-modal-item .set-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.themes-modal-count {
+  font-size: var(--font-size-xs);
+  color: var(--foreground-secondary);
+}
+
+.themes-modal-new {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.themes-modal-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.themes-modal-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.themes-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.themes-modal-spacer {
+  flex: 1;
+}
+
+.themes-modal-sets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+@media (max-width: 560px) {
+  .themes-modal {
+    grid-template-columns: 1fr;
+  }
+  .themes-modal-list {
+    border-right: none;
+    padding-right: 0;
+  }
+}
+
+/* Reference / conflict warnings in modals */
+.modal-warning {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--warning-500);
+  color: var(--foreground-primary);
+}
+
+.modal-hint {
+  margin-top: 8px;
+  color: var(--foreground-secondary);
+}
+
+.ref-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--foreground-primary);
+}
+
+.ref-list .ref-set,
+.ref-list .ref-more {
+  color: var(--foreground-secondary);
 }

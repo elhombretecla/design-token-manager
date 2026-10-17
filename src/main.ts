@@ -4,9 +4,9 @@ import type { SerializedSet, SerializedToken, SerializedTheme, AliasPickerSet, S
 import type { CatalogSnapshot, Op, OpResult, PluginMessage, SnapshotSet, SnapshotToken, UiMessage } from "./shared/protocol";
 import { Resolver, type ResolveContext } from "./shared/resolver";
 import { esc } from "./utils/esc";
-import { isAlias, parseMixedValue } from "./utils/alias";
+import { isAlias, parseMixedValue, referencesName, replaceReference } from "./utils/alias";
 import { hsvToRgb, rgbToHsv, hexToRgb, rgbToHex, rgbToHsl, hslToRgb, parseCssColor } from "./utils/color";
-import { normalizeShadowValueToPreview } from "./utils/shadowNormalize";
+import { normalizeShadowLayers, normalizeShadowValueToPreview, shadowLayersToValue } from "./utils/shadowNormalize";
 import { sanitizeTypographyValueForApi, normalizeTypographyValueToForm } from "./utils/typographyNormalize";
 
 // Pre-compute a flat sorted array of family names once at module load.
@@ -407,6 +407,7 @@ function applySnapshot(snapshot: CatalogSnapshot): void {
   renderSidebar();
   renderOverview();
   renderContextSelect();
+  renderThemesModal();
 
   if (state.selectedSetId && !snapshotSet(state.selectedSetId)) {
     selectSet(null); // also exits compare mode
@@ -583,6 +584,15 @@ const ICON_SET_SVG = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none
 const ICON_CHEVRON_RIGHT = `<svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const ICON_CHEVRON_DOWN  = `<svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
+// Checkbox mirroring the set's `active` flag in Penpot.
+function setActiveToggleHtml(setId: string): string {
+  const set = state.sets.find((s) => s.id === setId);
+  if (!set) return "";
+  return `<input type="checkbox" class="checkbox-input set-active-toggle" data-active-set-id="${esc(setId)}"
+    ${set.active ? "checked" : ""} aria-label="Active"
+    title="${set.active ? "Active" : "Inactive"} in Penpot. Toggling a set directly turns off all themes." />`;
+}
+
 function renderTreeNodes(nodes: TreeNode[], depth: number): string {
   return nodes
     .map((node) => {
@@ -594,10 +604,10 @@ function renderTreeNodes(nodes: TreeNode[], depth: number): string {
           ? `<ul class="set-tree-children">${renderTreeNodes(node.children, depth + 1)}</ul>`
           : "";
         const setIcon = node.hasSet ? `<span class="set-icon">${ICON_SET_SVG}</span>` : "";
-        return `<li class="set-tree-group${isActive ? " active" : ""}" data-group-path="${esc(node.path)}"${node.hasSet ? ` data-set-id="${esc(node.setId!)}"` : ""}><div class="set-tree-group-row" style="padding-left:${indent + 10}px"><button class="set-tree-chevron" data-toggle-group="${esc(node.path)}" aria-expanded="${isExpanded}" aria-label="${isExpanded ? "Collapse" : "Expand"} ${esc(node.label)}">${isExpanded ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT}</button>${setIcon}<span class="set-name">${esc(node.label)}</span></div>${children}</li>`;
+        return `<li class="set-tree-group${isActive ? " active" : ""}" data-group-path="${esc(node.path)}"${node.hasSet ? ` data-set-id="${esc(node.setId!)}"` : ""}><div class="set-tree-group-row" style="padding-left:${indent + 10}px"><button class="set-tree-chevron" data-toggle-group="${esc(node.path)}" aria-expanded="${isExpanded}" aria-label="${isExpanded ? "Collapse" : "Expand"} ${esc(node.label)}">${isExpanded ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT}</button>${setIcon}<span class="set-name">${esc(node.label)}</span>${node.hasSet ? setActiveToggleHtml(node.setId!) : ""}</div>${children}</li>`;
       } else {
         const isActive = node.setId === state.selectedSetId;
-        return `<li class="set-item${isActive ? " active" : ""}" data-set-id="${esc(node.setId)}" title="${esc(node.fullName)}" role="option" aria-selected="${isActive}" style="padding-left:${indent + 10}px"><span class="set-icon">${ICON_SET_SVG}</span><span class="set-name">${esc(node.label)}</span></li>`;
+        return `<li class="set-item${isActive ? " active" : ""}" data-set-id="${esc(node.setId)}" title="${esc(node.fullName)}" role="option" aria-selected="${isActive}" style="padding-left:${indent + 10}px"><span class="set-icon">${ICON_SET_SVG}</span><span class="set-name">${esc(node.label)}</span>${setActiveToggleHtml(node.setId)}</li>`;
       }
     })
     .join("");
@@ -628,6 +638,14 @@ function renderSidebar(): void {
       item.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         showSetContextMenu(e as MouseEvent, item.dataset.setId!);
+      });
+    });
+
+    // Active toggles: change the set's state in Penpot, never select it.
+    listEl.querySelectorAll<HTMLInputElement>(".set-active-toggle").forEach((cb) => {
+      cb.addEventListener("click", (e) => e.stopPropagation());
+      cb.addEventListener("change", () => {
+        void runOps([{ op: "set-set-active", setId: cb.dataset.activeSetId!, active: cb.checked }]);
       });
     });
 
@@ -666,24 +684,57 @@ function renderSidebar(): void {
     });
   }
 
-  // Themes
+  renderSidebarThemes();
+}
+
+// Themes grouped by their group; clicking one toggles it in Penpot (Penpot
+// keeps at most one active theme per group).
+function themesByGroup(): [string, SerializedTheme[]][] {
+  const groups = new Map<string, SerializedTheme[]>();
+  for (const t of state.themes) {
+    const list = groups.get(t.group) ?? [];
+    list.push(t);
+    groups.set(t.group, list);
+  }
+  return [...groups.entries()];
+}
+
+function renderSidebarThemes(): void {
   const themesDesc = el("themes-description");
   const themesList = el("themes-list");
   if (state.themes.length === 0) {
     themesDesc.classList.remove("hidden");
     themesList.classList.add("hidden");
-  } else {
-    themesDesc.classList.add("hidden");
-    themesList.classList.remove("hidden");
-    themesList.innerHTML = state.themes
-      .map(
-        (t) =>
-          `<li class="set-item body-s" title="${esc(t.group ? t.group + "/" + t.name : t.name)}">
-        <span class="set-name">${esc(t.group ? t.group + "/" + t.name : t.name)}</span>
-       </li>`
-      )
-      .join("");
+    return;
   }
+  themesDesc.classList.add("hidden");
+  themesList.classList.remove("hidden");
+  themesList.innerHTML = themesByGroup()
+    .map(([group, themes]) => {
+      const header = group ? `<li class="theme-group-label body-s">${esc(group)}</li>` : "";
+      const items = themes
+        .map((t) => `
+          <li class="set-item theme-item${t.active ? " theme-item--active" : ""}" data-theme-id="${esc(t.id)}"
+              role="button" tabindex="0" aria-pressed="${t.active}"
+              title="${t.active ? "Active — click to turn off" : "Click to activate"}">
+            <span class="theme-dot" aria-hidden="true"></span>
+            <span class="set-name">${esc(t.name)}</span>
+          </li>`)
+        .join("");
+      return header + items;
+    })
+    .join("");
+
+  themesList.querySelectorAll<HTMLElement>(".theme-item").forEach((item) => {
+    const toggle = () => {
+      const theme = state.themes.find((t) => t.id === item.dataset.themeId);
+      if (theme) void runOps([{ op: "set-theme-active", themeId: theme.id, active: !theme.active }]);
+    };
+    item.addEventListener("click", toggle);
+    item.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+    });
+  });
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -917,7 +968,8 @@ const COMPOSITE_PROP_TYPE: Record<string, string> = {
   fontFamily:     "fontFamilies",
   fontSize:       "fontSizes",
   fontWeight:     "fontWeights",
-  lineHeight:     "dimension",
+  // Penpot has no lineHeight token type; line heights reference number tokens.
+  lineHeight:     "number",
   letterSpacing:  "letterSpacing",
   textCase:       "textCase",
   textDecoration: "textDecoration",
@@ -943,16 +995,18 @@ function buildCompositeValueWithProp(
   newSubValue: string
 ): string {
   if (token.type === "shadow") {
-    const v = normalizeShadowValueToPreview(token.value) as Record<string, string>;
-    const u = { ...v, [propKey]: newSubValue };
-    return JSON.stringify({
+    // Table chips edit the first layer; the other layers are kept as-is.
+    const layers = normalizeShadowLayers(token.value);
+    const u = { ...(layers[0] ?? {}), [propKey]: newSubValue };
+    layers[0] = {
       type:   u.type   ?? "drop-shadow",
       x:      u.x      ?? "0",
       y:      u.y      ?? "0",
       blur:   u.blur   ?? "0",
       spread: u.spread ?? "0",
       color:  u.color  ?? "rgba(0,0,0,0.25)",
-    });
+    };
+    return shadowLayersToValue(layers);
   }
   if (token.type === "typography") {
     const v = normalizeTypographyValueToForm(token.value) as Record<string, string>;
@@ -1040,11 +1094,16 @@ function compositeTypographyPreviewHtml(vals: Record<string, string>, tokenId?: 
   return `<div class="composite-preview">${items}${moreHint}</div>`;
 }
 
-function compositeShadowPreviewHtml(vals: Record<string, string>, tokenId?: string): string {
+function compositeShadowPreviewHtml(vals: Record<string, string>, tokenId?: string, layerCount = 1): string {
   if (!vals || Object.keys(vals).length === 0) {
     return `<span class="composite-empty">—</span>`;
   }
   const parts: string[] = [];
+
+  // Multi-layer shadows: the preview shows the first layer plus a count.
+  if (layerCount > 1) {
+    parts.push(`<span class="cprop-badge" title="${layerCount} shadow layers">${layerCount} layers</span>`);
+  }
 
   // Shadow type badge (only shown when not the default "drop-shadow")
   if (vals.type && vals.type !== "drop-shadow") {
@@ -1152,7 +1211,7 @@ function resolvedValueCellHtml(token: SerializedToken): string {
     for (const key of Object.keys(form)) {
       if (isAlias(form[key])) delete form[key];
     }
-    return compositeShadowPreviewHtml(form);
+    return compositeShadowPreviewHtml(form, undefined, normalizeShadowLayers(raw).length);
   }
   return `<span class="token-resolved-text" title="${esc(raw)}">${esc(raw)}</span>`;
 }
@@ -1165,7 +1224,9 @@ function valueCellHtml(token: SerializedToken): string {
     return compositeTypographyPreviewHtml(normalizeTypographyValueToForm(token.value), token.id);
   }
   if (token.type === "shadow") {
-    return compositeShadowPreviewHtml(normalizeShadowValueToPreview(token.value), token.id);
+    return compositeShadowPreviewHtml(
+      normalizeShadowValueToPreview(token.value), token.id, normalizeShadowLayers(token.value).length,
+    );
   }
 
   // Pure alias: entire value is a single {reference}
@@ -1987,6 +2048,7 @@ function showModal(html: string): void {
 }
 
 function closeModal(): void {
+  themesModal = null;
   closeModalAliasPicker();
   closeFontPicker();
   el("modal-overlay").classList.add("hidden");
@@ -2136,6 +2198,7 @@ function showDeleteTokenConfirm(token: SerializedToken): void {
       <p class="body-s">
         Are you sure you want to delete <strong>${esc(token.name)}</strong>?
       </p>
+      ${deleteWarningHtml([token.name], new Set([token.id]))}
     </div>
     <div class="modal-footer">
       <button type="button" data-appearance="secondary" data-modal-close>Cancel</button>
@@ -2187,10 +2250,7 @@ function showMoveTokenModal(token: SerializedToken): void {
     const toSetId = el<HTMLSelectElement>("move-token-target").value;
     const copy = el<HTMLInputElement>("move-token-copy").checked;
     if (!toSetId || !state.selectedSetId) return;
-    if (state.selectedSetId) {
-      void runOps([{ op: "move-token", fromSetId: state.selectedSetId, tokenId: token.id, toSetId, copy }]);
-    }
-    closeModal();
+    moveTokens([token.id], state.selectedSetId, toSetId, copy);
   });
 }
 
@@ -2220,7 +2280,7 @@ const TOKEN_TYPES: TokenTypeDef[] = [
   { value: "spacing", label: "Spacing", placeholder: "e.g. 8px or {alias}" },
   { value: "borderWidth", label: "Stroke Width", placeholder: "e.g. 1px or {alias}" },
   { value: "textCase", label: "Text Case", placeholder: "uppercase | lowercase | capitalize | none" },
-  { value: "textDecoration", label: "Text Decoration", placeholder: "none | underline | line-through" },
+  { value: "textDecoration", label: "Text Decoration", placeholder: "none | underline | strike-through" },
   { value: "typography", label: "Typography", placeholder: "" },
 ];
 
@@ -2234,73 +2294,92 @@ function getTypeDef(value: string): TokenTypeDef {
 // CATALOG_MAX_UNFILTERED rows when no search query is active.
 
 // Builds the value fields section for shadow tokens
-function shadowFieldsHtml(x = "0", y = "4", blur = "8", spread = "0", color = "rgba(0,0,0,0.25)", type = "drop-shadow"): string {
+const DEFAULT_SHADOW_LAYER: Record<string, string> = {
+  type: "drop-shadow", x: "0", y: "4", blur: "8", spread: "0", color: "rgba(0,0,0,0.25)",
+};
+
+function shadowAliasTrigger(type: string, inputId: string): string {
+  return `<button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
+                  title="Insert alias reference"
+                  data-token-type="${type}" data-target-input="${inputId}">${VALUE_ALIAS_INSERT_ICON}</button>`;
+}
+
+function shadowLayerHtml(layer: Record<string, string>, i: number, total: number): string {
+  const v = (k: string) => esc(layer[k] ?? DEFAULT_SHADOW_LAYER[k]);
+  const type = layer.type ?? "drop-shadow";
+  const numField = (key: string, label: string) => `
+      <div class="form-field">
+        <label class="form-label" for="shadow-${key}-${i}">${label}</label>
+        <div class="value-input-wrapper">
+          <input type="text" class="input form-input" id="shadow-${key}-${i}" value="${v(key)}" />
+          ${shadowAliasTrigger("dimension", `shadow-${key}-${i}`)}
+        </div>
+      </div>`;
+  const header = total > 1
+    ? `<div class="shadow-layer-header">
+        <span class="form-label">Layer ${i + 1}</span>
+        <button type="button" class="icon-btn shadow-layer-remove" data-remove-layer="${i}"
+                title="Remove layer" aria-label="Remove layer ${i + 1}">${ICON_DELETE}</button>
+      </div>`
+    : "";
   return `
+  <div class="shadow-layer" data-layer="${i}">
+    ${header}
     <div class="form-field">
       <label class="form-label">Shadow type</label>
       <div style="display:flex;gap:14px;margin-top:2px">
         <div class="radio-container">
-          <input type="radio" class="radio-input" name="shadow-type"
-                 id="shadow-drop" value="drop-shadow" ${type === "drop-shadow" ? "checked" : ""} />
-          <label class="radio-label" for="shadow-drop">Drop shadow</label>
+          <input type="radio" class="radio-input" name="shadow-type-${i}"
+                 id="shadow-drop-${i}" value="drop-shadow" ${type !== "inner-shadow" ? "checked" : ""} />
+          <label class="radio-label" for="shadow-drop-${i}">Drop shadow</label>
         </div>
         <div class="radio-container">
-          <input type="radio" class="radio-input" name="shadow-type"
-                 id="shadow-inner" value="inner-shadow" ${type === "inner-shadow" ? "checked" : ""} />
-          <label class="radio-label" for="shadow-inner">Inner shadow</label>
+          <input type="radio" class="radio-input" name="shadow-type-${i}"
+                 id="shadow-inner-${i}" value="inner-shadow" ${type === "inner-shadow" ? "checked" : ""} />
+          <label class="radio-label" for="shadow-inner-${i}">Inner shadow</label>
         </div>
       </div>
     </div>
     <div class="shadow-grid">
-      <div class="form-field">
-        <label class="form-label" for="shadow-x">X</label>
-        <div class="value-input-wrapper">
-          <input type="text" class="input form-input" id="shadow-x" value="${esc(x)}" />
-          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
-                  title="Insert alias reference"
-                  data-token-type="dimension" data-target-input="shadow-x">${VALUE_ALIAS_INSERT_ICON}</button>
-        </div>
-      </div>
-      <div class="form-field">
-        <label class="form-label" for="shadow-y">Y</label>
-        <div class="value-input-wrapper">
-          <input type="text" class="input form-input" id="shadow-y" value="${esc(y)}" />
-          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
-                  title="Insert alias reference"
-                  data-token-type="dimension" data-target-input="shadow-y">${VALUE_ALIAS_INSERT_ICON}</button>
-        </div>
-      </div>
-      <div class="form-field">
-        <label class="form-label" for="shadow-blur">Blur</label>
-        <div class="value-input-wrapper">
-          <input type="text" class="input form-input" id="shadow-blur" value="${esc(blur)}" />
-          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
-                  title="Insert alias reference"
-                  data-token-type="dimension" data-target-input="shadow-blur">${VALUE_ALIAS_INSERT_ICON}</button>
-        </div>
-      </div>
-      <div class="form-field">
-        <label class="form-label" for="shadow-spread">Spread</label>
-        <div class="value-input-wrapper">
-          <input type="text" class="input form-input" id="shadow-spread" value="${esc(spread)}" />
-          <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
-                  title="Insert alias reference"
-                  data-token-type="dimension" data-target-input="shadow-spread">${VALUE_ALIAS_INSERT_ICON}</button>
-        </div>
-      </div>
+      ${numField("x", "X")}
+      ${numField("y", "Y")}
+      ${numField("blur", "Blur")}
+      ${numField("spread", "Spread")}
     </div>
     <div class="form-field">
-      <label class="form-label" for="shadow-color">Color</label>
+      <label class="form-label" for="shadow-color-${i}">Color</label>
       <div class="value-input-wrapper">
-        <span class="color-swatch-small" id="shadow-color-swatch"
-              style="background:${esc(color || "rgba(0,0,0,0.25)")}"></span>
-        <input type="text" class="input form-input has-swatch" id="shadow-color"
-               value="${esc(color)}" placeholder="rgba(0,0,0,0.25)" />
-        <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
-                title="Insert alias reference"
-                data-token-type="color" data-target-input="shadow-color">${VALUE_ALIAS_INSERT_ICON}</button>
+        <span class="color-swatch-small" id="shadow-color-swatch-${i}"
+              style="background:${v("color")}"></span>
+        <input type="text" class="input form-input has-swatch" id="shadow-color-${i}"
+               value="${v("color")}" placeholder="rgba(0,0,0,0.25)" />
+        ${shadowAliasTrigger("color", `shadow-color-${i}`)}
       </div>
-    </div>`;
+    </div>
+  </div>`;
+}
+
+/** Shadow value editor: one block per layer plus an "Add layer" button. */
+function shadowFieldsHtml(layers: Record<string, string>[] = [DEFAULT_SHADOW_LAYER]): string {
+  const list = layers.length > 0 ? layers : [DEFAULT_SHADOW_LAYER];
+  return `
+    <div id="shadow-layers">${list.map((l, i) => shadowLayerHtml(l, i, list.length)).join("")}</div>
+    <button type="button" class="shadow-add-layer-btn" id="shadow-add-layer">+ Add layer</button>`;
+}
+
+function readShadowLayers(): Record<string, string>[] {
+  return [...document.querySelectorAll<HTMLElement>("#shadow-layers .shadow-layer")].map((node) => {
+    const i = node.dataset.layer;
+    const val = (key: string) => el<HTMLInputElement>(`shadow-${key}-${i}`)?.value ?? DEFAULT_SHADOW_LAYER[key];
+    return {
+      type: document.querySelector<HTMLInputElement>(`input[name="shadow-type-${i}"]:checked`)?.value ?? "drop-shadow",
+      x: val("x"),
+      y: val("y"),
+      blur: val("blur"),
+      spread: val("spread"),
+      color: val("color"),
+    };
+  });
 }
 
 // Builds the value fields section for typography tokens.
@@ -2351,7 +2430,7 @@ function typographyFieldsHtml(vals: Record<string, string> = {}): string {
                  value="${v("lineHeight")}" placeholder="1.5" />
           <button type="button" class="icon-btn value-alias-trigger composite-alias-trigger"
                   title="Insert alias reference"
-                  data-token-type="dimension" data-target-input="typo-line-height">${VALUE_ALIAS_INSERT_ICON}</button>
+                  data-token-type="number" data-target-input="typo-line-height">${VALUE_ALIAS_INSERT_ICON}</button>
         </div>
       </div>
       <div class="form-field">
@@ -2373,7 +2452,7 @@ function typographyFieldsHtml(vals: Record<string, string> = {}): string {
       <div class="form-field" style="grid-column: 1/-1">
         <label class="form-label" for="typo-text-decoration">Text Decoration</label>
         <select class="select" id="typo-text-decoration">
-          ${SELECT_OPTIONS.textDecoration.map((o) => `<option value="${o}"${o === v("textDecoration") ? " selected" : ""}>${o}</option>`).join("")}
+          ${SELECT_OPTIONS.textDecoration.map((o) => `<option value="${o}"${o === legacyTextDecoration(v("textDecoration")) ? " selected" : ""}>${o}</option>`).join("")}
         </select>
       </div>
     </div>`;
@@ -2381,8 +2460,14 @@ function typographyFieldsHtml(vals: Record<string, string> = {}): string {
 
 const SELECT_OPTIONS: Record<string, string[]> = {
   textCase:       ["none", "uppercase", "lowercase", "capitalize"],
-  textDecoration: ["none", "underline", "line-through"],
+  // Penpot's value is "strike-through" (not CSS's "line-through").
+  textDecoration: ["none", "underline", "strike-through"],
 };
+
+// Tokens created by earlier versions of the plugin used "line-through".
+function legacyTextDecoration(value: string): string {
+  return value === "line-through" ? "strike-through" : value;
+}
 
 // Builds the simple single-value input area
 function simpleValueFieldHtml(type: string, value = ""): string {
@@ -2391,8 +2476,9 @@ function simpleValueFieldHtml(type: string, value = ""): string {
   const selectOptions = SELECT_OPTIONS[type];
 
   if (selectOptions) {
+    const current = type === "textDecoration" ? legacyTextDecoration(value) : value;
     const opts = selectOptions.map(
-      (o) => `<option value="${o}"${o === value ? " selected" : ""}>${o}</option>`
+      (o) => `<option value="${o}"${o === current ? " selected" : ""}>${o}</option>`
     ).join("");
     return `
     <div class="form-field">
@@ -2425,15 +2511,7 @@ function simpleValueFieldHtml(type: string, value = ""): string {
 }
 
 function readShadowValue(): string {
-  const type = (document.querySelector<HTMLInputElement>('input[name="shadow-type"]:checked'))?.value ?? "drop-shadow";
-  return JSON.stringify({
-    type,
-    x: el<HTMLInputElement>("shadow-x")?.value ?? "0",
-    y: el<HTMLInputElement>("shadow-y")?.value ?? "0",
-    blur: el<HTMLInputElement>("shadow-blur")?.value ?? "0",
-    spread: el<HTMLInputElement>("shadow-spread")?.value ?? "0",
-    color: el<HTMLInputElement>("shadow-color")?.value ?? "rgba(0,0,0,0.25)",
-  });
+  return shadowLayersToValue(readShadowLayers());
 }
 
 function readTypographyValue(): string {
@@ -2771,23 +2849,59 @@ function bindColorSwatchPreview(): void {
   });
 }
 
-function bindShadowColorPicker(): void {
-  const input = el<HTMLInputElement>("shadow-color");
-  const swatch = el("shadow-color-swatch");
-  if (!input || !swatch) return;
+// `bindAliasTriggers`: only after re-rendering layers — on first render the
+// modal's bindCompositePropAliasTriggers() already covers these buttons.
+function bindShadowColorPicker(bindAliasTriggers = false): void {
+  const container = el("shadow-layers");
+  if (!container) return;
 
-  // Live text-typed preview
-  input.addEventListener("input", () => {
-    swatch.style.background = input.value || "rgba(0,0,0,0.25)";
+  container.querySelectorAll<HTMLElement>(".shadow-layer").forEach((node) => {
+    const i = node.dataset.layer;
+    const input = el<HTMLInputElement>(`shadow-color-${i}`);
+    const swatch = el(`shadow-color-swatch-${i}`);
+    if (!input || !swatch) return;
+    // Live text-typed preview
+    input.addEventListener("input", () => {
+      swatch.style.background = input.value || "rgba(0,0,0,0.25)";
+    });
+    // Swatch click → open picker
+    swatch.style.pointerEvents = "auto";
+    swatch.style.cursor = "pointer";
+    swatch.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openColorPicker(`shadow-color-${i}`, `shadow-color-swatch-${i}`);
+    });
   });
 
-  // Swatch click → open picker
-  swatch.style.pointerEvents = "auto";
-  swatch.style.cursor = "pointer";
-  swatch.addEventListener("click", (e) => {
-    e.stopPropagation();
-    openColorPicker("shadow-color", "shadow-color-swatch");
+  if (bindAliasTriggers) {
+    container.querySelectorAll<HTMLButtonElement>(".composite-alias-trigger").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openModalAliasPicker(btn.dataset.tokenType ?? "dimension", btn, btn.dataset.targetInput ?? "");
+      });
+    });
+  }
+
+  const rerender = (layers: Record<string, string>[]) => {
+    container.innerHTML = layers.map((l, i) => shadowLayerHtml(l, i, layers.length)).join("");
+    bindShadowColorPicker(true);
+  };
+
+  container.querySelectorAll<HTMLButtonElement>("[data-remove-layer]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const layers = readShadowLayers();
+      layers.splice(Number(btn.dataset.removeLayer), 1);
+      rerender(layers);
+    });
   });
+
+  const addBtn = el("shadow-add-layer");
+  if (addBtn && !addBtn.dataset.bound) {
+    addBtn.dataset.bound = "1";
+    addBtn.addEventListener("click", () => {
+      rerender([...readShadowLayers(), { ...DEFAULT_SHADOW_LAYER }]);
+    });
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -2894,8 +3008,7 @@ function showNewTokenModal(initialType = "color"): void {
 
 function buildEditValueSection(token: SerializedToken): string {
   if (token.type === "shadow") {
-    const n = normalizeShadowValueToPreview(token.value);
-    return shadowFieldsHtml(n.x, n.y, n.blur, n.spread, n.color, n.type);
+    return shadowFieldsHtml(normalizeShadowLayers(token.value));
   }
   if (token.type === "typography") {
     return typographyFieldsHtml(normalizeTypographyValueToForm(token.value));
@@ -2940,17 +3053,181 @@ function showEditTokenModal(token: SerializedToken): void {
     const description = el<HTMLInputElement>("edit-token-description")?.value?.trim() ?? "";
     const value = readTokenValue(token.type);
 
-    if (!name) return;
-    if (state.selectedSetId) {
-      void runOps([{
-        op: "update-token",
-        setId: state.selectedSetId,
-        tokenId: token.id,
-        name,
-        value,
-        description,
-      }]);
+    if (!name || !state.selectedSetId) return;
+    saveTokenEdit(state.selectedSetId, token, name, value, description);
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  REFERENCES & NAME CONFLICTS
+//  Renaming or deleting a token silently breaks `{name}` references to it,
+//  and moving tokens can collide with names in the target set. These
+//  helpers find the affected tokens in the snapshot and build the ops.
+// ════════════════════════════════════════════════════════════════════════
+
+interface TokenRef {
+  set: SnapshotSet;
+  token: SnapshotToken;
+}
+
+
+/** Tokens (in any set) whose value references one of `names`. */
+function findReferences(names: string[], excludeIds: Set<string> = new Set()): TokenRef[] {
+  const refs: TokenRef[] = [];
+  for (const set of state.snapshot.sets) {
+    for (const token of set.tokens) {
+      if (excludeIds.has(token.id)) continue;
+      if (names.some((name) => referencesName(token.value, name))) {
+        refs.push({ set, token });
+      }
     }
+  }
+  return refs;
+}
+
+/** Sets other than `setId` that also define `name` (e.g. theme variants). */
+function otherSetsDefining(name: string, setId: string): SnapshotSet[] {
+  return state.snapshot.sets.filter((s) => s.id !== setId && s.tokens.some((t) => t.name === name));
+}
+
+
+function refsListHtml(refs: TokenRef[], max = 6): string {
+  const items = refs
+    .slice(0, max)
+    .map((r) => `<li><span class="ref-set">${esc(r.set.name)}</span> / ${esc(r.token.name)}</li>`)
+    .join("");
+  const more = refs.length > max ? `<li class="ref-more">and ${refs.length - max} more…</li>` : "";
+  return `<ul class="ref-list body-s">${items}${more}</ul>`;
+}
+
+function deleteWarningHtml(names: string[], excludeIds: Set<string>): string {
+  const refs = findReferences(names, excludeIds);
+  if (refs.length === 0) return "";
+  return `
+    <div class="modal-warning body-s">
+      ${refs.length} token${refs.length === 1 ? " references" : "s reference"} ${names.length === 1 ? "it" : "them"}
+      and will break unless another active set defines the same name:
+      ${refsListHtml(refs)}
+    </div>`;
+}
+
+/**
+ * Save an edited token. When the name changes and other tokens reference
+ * the old name, ask whether to update those references too.
+ */
+function saveTokenEdit(setId: string, token: SerializedToken, name: string, value: string, description: string): void {
+  const update: Op = { op: "update-token", setId, tokenId: token.id, name, value, description };
+  const refs = name !== token.name ? findReferences([token.name], new Set([token.id])) : [];
+  const siblings = name !== token.name ? otherSetsDefining(token.name, setId) : [];
+
+  if (refs.length === 0 && siblings.length === 0) {
+    void runOps([update]);
+    closeModal();
+    return;
+  }
+
+  const siblingNote = siblings.length
+    ? `<p class="body-s">Also defined in ${siblings.map((s) => `<strong>${esc(s.name)}</strong>`).join(", ")} — those tokens keep the old name.</p>`
+    : "";
+  const refsNote = refs.length
+    ? `<p class="body-s">${refs.length} token${refs.length === 1 ? " references" : "s reference"} <strong>{${esc(token.name)}}</strong>:</p>${refsListHtml(refs)}`
+    : "";
+
+  showModal(`
+    <div class="modal-header">
+      <h2 class="modal-title">Rename ${esc(token.name)}</h2>
+      ${CLOSE_BTN_SVG}
+    </div>
+    <div class="modal-body">
+      ${refsNote}
+      ${siblingNote}
+      <p class="body-s modal-hint">Shapes with this token applied refer to it by name and may need it re-applied.</p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" data-appearance="secondary" id="rename-only-btn">Rename only</button>
+      ${refs.length ? `<button type="button" data-appearance="primary" id="rename-update-btn">Rename and update references</button>` : ""}
+    </div>`);
+
+  el("rename-only-btn").addEventListener("click", () => {
+    void runOps([update]);
+    closeModal();
+  });
+  document.getElementById("rename-update-btn")?.addEventListener("click", () => {
+    const refOps: Op[] = refs.map((r) => ({
+      op: "update-token",
+      setId: r.set.id,
+      tokenId: r.token.id,
+      name: r.token.name,
+      value: replaceReference(r.token.value, token.name, name),
+      description: r.token.description,
+    }));
+    void runOps([update, ...refOps]);
+    closeModal();
+  });
+}
+
+function uniqueName(base: string, taken: Set<string>): string {
+  let name = `${base}-copy`;
+  for (let n = 2; taken.has(name); n++) name = `${base}-copy-${n}`;
+  taken.add(name);
+  return name;
+}
+
+/** Move/copy tokens, asking how to resolve names that already exist in the target. */
+function moveTokens(tokenIds: string[], fromSetId: string, toSetId: string, copy: boolean): void {
+  const from = snapshotSet(fromSetId);
+  const to = snapshotSet(toSetId);
+  if (!from || !to) return;
+
+  const targetByName = new Map(to.tokens.map((t) => [t.name, t]));
+  const tokens = tokenIds
+    .map((id) => from.tokens.find((t) => t.id === id))
+    .filter((t): t is SnapshotToken => Boolean(t));
+  const conflicts = tokens.filter((t) => targetByName.has(t.name));
+  const moveOp = (t: SnapshotToken, newName?: string): Op =>
+    ({ op: "move-token", fromSetId, toSetId, tokenId: t.id, copy, ...(newName ? { newName } : {}) });
+
+  if (conflicts.length === 0) {
+    void runOps(tokens.map((t) => moveOp(t)));
+    closeModal();
+    return;
+  }
+
+  const clean = tokens.filter((t) => !targetByName.has(t.name));
+  showModal(`
+    <div class="modal-header">
+      <h2 class="modal-title">Name conflicts in ${esc(to.name)}</h2>
+      ${CLOSE_BTN_SVG}
+    </div>
+    <div class="modal-body">
+      <p class="body-s">
+        ${conflicts.length} of ${tokens.length} token${tokens.length === 1 ? "" : "s"} already exist in
+        <strong>${esc(to.name)}</strong>:
+      </p>
+      <ul class="ref-list body-s">${conflicts.slice(0, 6).map((t) => `<li>${esc(t.name)}</li>`).join("")}${conflicts.length > 6 ? `<li class="ref-more">and ${conflicts.length - 6} more…</li>` : ""}</ul>
+    </div>
+    <div class="modal-footer">
+      <button type="button" data-appearance="secondary" id="conflict-skip-btn">Skip them</button>
+      <button type="button" data-appearance="secondary" id="conflict-rename-btn">Keep both</button>
+      <button type="button" data-appearance="primary" data-variant="destructive" id="conflict-replace-btn">Replace</button>
+    </div>`);
+
+  el("conflict-skip-btn").addEventListener("click", () => {
+    void runOps(clean.map((t) => moveOp(t)));
+    closeModal();
+  });
+  el("conflict-rename-btn").addEventListener("click", () => {
+    const taken = new Set(targetByName.keys());
+    void runOps([...clean.map((t) => moveOp(t)), ...conflicts.map((t) => moveOp(t, uniqueName(t.name, taken)))]);
+    closeModal();
+  });
+  el("conflict-replace-btn").addEventListener("click", () => {
+    const ops: Op[] = [];
+    for (const t of conflicts) {
+      ops.push({ op: "delete-token", setId: toSetId, tokenId: targetByName.get(t.name)!.id });
+      ops.push(moveOp(t));
+    }
+    void runOps([...clean.map((t) => moveOp(t)), ...ops]);
     closeModal();
   });
 }
@@ -3036,9 +3313,8 @@ function handleBulkMove(ids: Set<string>): void {
     const toSetId = el<HTMLSelectElement>("bulk-move-target").value;
     const copy = el<HTMLInputElement>("bulk-move-copy").checked;
     if (!toSetId) return;
-    void runOps([...ids].map((tokenId) => ({ op: "move-token" as const, fromSetId, tokenId, toSetId, copy })));
     selectedTokenIds.clear();
-    closeModal();
+    moveTokens([...ids], fromSetId, toSetId, copy);
   });
 }
 
@@ -3067,6 +3343,10 @@ function handleBulkDelete(ids: Set<string>): void {
         Are you sure you want to delete <strong>${count} token${count === 1 ? "" : "s"}</strong>?
         This action cannot be undone.
       </p>
+      ${deleteWarningHtml(
+        state.tokens.filter((t) => ids.has(t.id)).map((t) => t.name),
+        ids,
+      )}
     </div>
     <div class="modal-footer">
       <button type="button" data-appearance="secondary" data-modal-close>Cancel</button>
@@ -3078,6 +3358,162 @@ function handleBulkDelete(ids: Set<string>): void {
     void runOps([...ids].map((tokenId) => ({ op: "delete-token" as const, setId, tokenId })));
     selectedTokenIds.clear();
     closeModal();
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  MODAL: THEMES
+//  Left: themes grouped by group + creation form. Right: the selected
+//  theme's group/name and the sets it activates. Re-rendered on every
+//  snapshot while open, so changes made elsewhere show up immediately.
+// ════════════════════════════════════════════════════════════════════════
+
+// `pendingName`: a just-created theme to select once it reaches the snapshot.
+let themesModal: { selectedThemeId: string | null; pendingName?: string } | null = null;
+
+function showThemesModal(selectedThemeId: string | null = null): void {
+  themesModal = { selectedThemeId: selectedThemeId ?? state.themes[0]?.id ?? null };
+  showModal(`<div id="themes-modal-root"></div>`);
+  el("modal-container").classList.add("modal--wide");
+  renderThemesModal();
+}
+
+function renderThemesModal(): void {
+  const root = document.getElementById("themes-modal-root");
+  if (!themesModal || !root) return;
+
+  if (themesModal.pendingName) {
+    const created = state.themes.find((t) => t.name === themesModal!.pendingName);
+    if (created) {
+      themesModal.selectedThemeId = created.id;
+      themesModal.pendingName = undefined;
+    }
+  }
+  if (themesModal.selectedThemeId && !state.themes.some((t) => t.id === themesModal!.selectedThemeId)) {
+    themesModal.selectedThemeId = state.themes[0]?.id ?? null;
+  }
+  const selected = state.themes.find((t) => t.id === themesModal!.selectedThemeId) ?? null;
+
+  // Keep in-progress input across re-renders.
+  const keep = (id: string) => (document.getElementById(id) as HTMLInputElement | null)?.value ?? "";
+  const draftGroup = keep("new-theme-group");
+  const draftName = keep("new-theme-name");
+  const focusedId = document.activeElement?.id ?? "";
+
+  const list = themesByGroup()
+    .map(([group, themes]) => `
+      <div class="themes-modal-group">
+        <div class="themes-modal-group-label body-s">${esc(group || "No group")}</div>
+        ${themes.map((t) => `
+          <button type="button" class="themes-modal-item${t.id === selected?.id ? " is-selected" : ""}" data-select-theme="${esc(t.id)}">
+            <span class="theme-dot${t.active ? " theme-dot--active" : ""}" aria-hidden="true"></span>
+            <span class="set-name">${esc(t.name)}</span>
+            <span class="themes-modal-count">${t.setIds.length}</span>
+          </button>`).join("")}
+      </div>`)
+    .join("");
+
+  const detail = selected
+    ? `
+      <div class="themes-modal-fields">
+        <div class="form-field">
+          <label class="form-label" for="theme-group-input">Group</label>
+          <input type="text" class="input form-input" id="theme-group-input" value="${esc(selected.group)}" placeholder="e.g. mode" />
+        </div>
+        <div class="form-field">
+          <label class="form-label" for="theme-name-input">Name</label>
+          <input type="text" class="input form-input" id="theme-name-input" value="${esc(selected.name)}" />
+        </div>
+      </div>
+      <div class="themes-modal-actions">
+        <label class="checkbox-container body-s">
+          <input type="checkbox" class="checkbox-input" id="theme-active-input" ${selected.active ? "checked" : ""} />
+          Active
+        </label>
+        <span class="themes-modal-spacer"></span>
+        <button type="button" class="icon-btn" id="theme-duplicate-btn" title="Duplicate theme">${ICON_DUPLICATE}</button>
+        <button type="button" class="icon-btn" id="theme-delete-btn" title="Delete theme">${ICON_DELETE}</button>
+      </div>
+      <div class="form-label">Sets in this theme</div>
+      <div class="themes-modal-sets">
+        ${state.sets.length === 0 ? `<p class="body-s empty-state-msg">No sets yet.</p>` : state.sets.map((set) => `
+          <label class="checkbox-container body-s themes-modal-set">
+            <input type="checkbox" class="checkbox-input theme-set-cb" value="${esc(set.id)}"
+                   ${selected.setIds.includes(set.id) ? "checked" : ""} />
+            <span>${esc(set.name)}</span>
+          </label>`).join("")}
+      </div>`
+    : `<p class="body-s empty-state-msg">Create a theme to choose which sets it activates.</p>`;
+
+  root.innerHTML = `
+    <div class="modal-header">
+      <h2 class="modal-title">Themes</h2>
+      ${CLOSE_BTN_SVG}
+    </div>
+    <div class="modal-body themes-modal">
+      <div class="themes-modal-list">
+        ${list || `<p class="body-s empty-state-msg">No themes yet.</p>`}
+        <div class="themes-modal-new">
+          <input type="text" class="input form-input" id="new-theme-group" placeholder="Group (optional)" value="${esc(draftGroup)}" />
+          <input type="text" class="input form-input" id="new-theme-name" placeholder="New theme name" value="${esc(draftName)}" />
+          <button type="button" data-appearance="secondary" id="create-theme-btn">+ Add theme</button>
+        </div>
+      </div>
+      <div class="themes-modal-detail">${detail}</div>
+    </div>`;
+
+  root.querySelectorAll<HTMLElement>("[data-modal-close]").forEach((b) => b.addEventListener("click", closeModal));
+  if (focusedId) document.getElementById(focusedId)?.focus();
+
+  root.querySelectorAll<HTMLElement>("[data-select-theme]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      themesModal!.selectedThemeId = btn.dataset.selectTheme!;
+      renderThemesModal();
+    });
+  });
+
+  const create = () => {
+    const name = keep("new-theme-name").trim();
+    if (!name) { el("new-theme-name").classList.add("error"); return; }
+    themesModal!.pendingName = name;
+    el<HTMLInputElement>("new-theme-name").value = "";
+    void runOps([{ op: "create-theme", group: keep("new-theme-group").trim(), name }]).then((r) => {
+      if (!r[0]?.ok && themesModal) themesModal.pendingName = undefined;
+    });
+  };
+  el("create-theme-btn").addEventListener("click", create);
+  el("new-theme-name").addEventListener("keydown", (e) => { if (e.key === "Enter") create(); });
+
+  if (!selected) return;
+
+  const saveNames = () => {
+    const group = keep("theme-group-input").trim();
+    const name = keep("theme-name-input").trim();
+    if (!name) { el("theme-name-input").classList.add("error"); return; }
+    if (group !== selected.group || name !== selected.name) {
+      void runOps([{ op: "update-theme", themeId: selected.id, group, name }]);
+    }
+  };
+  for (const id of ["theme-group-input", "theme-name-input"]) {
+    el(id).addEventListener("change", saveNames);
+    el(id).addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") saveNames(); });
+  }
+
+  el<HTMLInputElement>("theme-active-input").addEventListener("change", (e) => {
+    void runOps([{ op: "set-theme-active", themeId: selected.id, active: (e.target as HTMLInputElement).checked }]);
+  });
+  el("theme-duplicate-btn").addEventListener("click", () => {
+    void runOps([{ op: "duplicate-theme", themeId: selected.id }]);
+  });
+  el("theme-delete-btn").addEventListener("click", () => {
+    void runOps([{ op: "delete-theme", themeId: selected.id }]);
+  });
+
+  root.querySelectorAll<HTMLInputElement>(".theme-set-cb").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      const setIds = [...root.querySelectorAll<HTMLInputElement>(".theme-set-cb:checked")].map((c) => c.value);
+      void runOps([{ op: "set-theme-sets", themeId: selected.id, setIds }]);
+    });
   });
 }
 
@@ -3211,7 +3647,9 @@ function valueCellHtmlReadOnly(token: SerializedToken): string {
     return compositeTypographyPreviewHtml(normalizeTypographyValueToForm(token.value));
   }
   if (token.type === "shadow") {
-    return compositeShadowPreviewHtml(normalizeShadowValueToPreview(token.value));
+    return compositeShadowPreviewHtml(
+      normalizeShadowValueToPreview(token.value), undefined, normalizeShadowLayers(token.value).length,
+    );
   }
   if (isAlias(token.value)) {
     const aliasName = token.value.trim().slice(1, -1);
@@ -3466,6 +3904,9 @@ function bindGlobalListeners(): void {
 
   // Math info
   el("math-info-btn")?.addEventListener("click", showMathInfoModal);
+
+  // Themes
+  el("themes-settings-btn")?.addEventListener("click", () => showThemesModal());
 
   // Exit comparison mode
   el("compare-exit-btn")?.addEventListener("click", exitCompareMode);

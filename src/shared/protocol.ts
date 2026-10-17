@@ -60,7 +60,16 @@ export type Op =
   | { op: "update-token"; setId: string; tokenId: string; name: string; value: string; description: string }
   | { op: "duplicate-token"; setId: string; tokenId: string }
   | { op: "delete-token"; setId: string; tokenId: string }
-  | { op: "move-token"; fromSetId: string; toSetId: string; tokenId: string; copy: boolean };
+  /** `newName` renames the token in the target set (name-conflict resolution). */
+  | { op: "move-token"; fromSetId: string; toSetId: string; tokenId: string; copy: boolean; newName?: string }
+  | { op: "set-set-active"; setId: string; active: boolean }
+  | { op: "create-theme"; group: string; name: string; setIds?: string[] }
+  | { op: "update-theme"; themeId: string; group: string; name: string }
+  | { op: "duplicate-theme"; themeId: string }
+  | { op: "delete-theme"; themeId: string }
+  | { op: "set-theme-active"; themeId: string; active: boolean }
+  /** Replace the theme's set list with exactly `setIds`. */
+  | { op: "set-theme-sets"; themeId: string; setIds: string[] };
 
 export type UiMessage =
   | { type: "init" }

@@ -125,3 +125,21 @@ describe("Resolver", () => {
     expect(r.setIds.has("dark")).toBe(false);
   });
 });
+
+describe("Resolver — multi-layer shadows", () => {
+  it("resolves every layer", () => {
+    const layers = [
+      { type: "drop-shadow", x: "0", y: "{space.base}", blur: "8", spread: "0", color: "{color.blue}" },
+      { type: "inner-shadow", x: "1", y: "1", blur: "{space.base} * 2", spread: "0", color: "#000" },
+    ];
+    const snap: CatalogSnapshot = {
+      sets: [{ ...snapshot.sets[0], tokens: [...snapshot.sets[0].tokens, tok("shadow.md", JSON.stringify(layers), "shadow")] }],
+      themes: [],
+    };
+    const r = Resolver.forContext(snap, { kind: "active" });
+    expect(JSON.parse(r.resolveName("shadow.md").value!)).toEqual([
+      { type: "drop-shadow", x: "0", y: "4px", blur: "8", spread: "0", color: "#0055ff" },
+      { type: "inner-shadow", x: "1", y: "1", blur: "8px", spread: "0", color: "#000" },
+    ]);
+  });
+});
