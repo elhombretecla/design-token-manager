@@ -7,13 +7,6 @@
 
 import type { ResolutionStatus } from "./resolver";
 
-export interface SerializedSet {
-  id: string;
-  name: string;
-  active: boolean;
-  tokenCount: number;
-}
-
 export interface SerializedToken {
   id: string;
   name: string;
@@ -26,14 +19,6 @@ export interface SerializedToken {
   /** Referenced names that don't exist in the current context. */
   missingRefs?: string[];
   resolveError?: string;
-}
-
-export interface SerializedTheme {
-  id: string;
-  group: string;
-  name: string;
-  active: boolean;
-  setIds: string[];
 }
 
 export interface AliasPickerSet {

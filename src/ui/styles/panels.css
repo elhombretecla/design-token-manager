@@ -1,0 +1,21 @@
+/* ════════════════════════════════════════════════════════════════════════
+   Styles for the Preact panels and modals (v2 phase 4)
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* Inline confirmation replacing the theme's duplicate/delete buttons */
+.theme-delete-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--foreground-primary);
+}
+
+.theme-delete-confirm button {
+  padding: 4px 12px;
+}
+
+/* Import summary spacing (was keyed on #import-summary) */
+.import-summary .form-field,
+.import-summary .checkbox-container {
+  margin-top: 10px;
+}

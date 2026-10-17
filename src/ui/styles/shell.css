@@ -1,0 +1,346 @@
+/* ════════════════════════════════════════════════════════════════════════
+   Shell, sidebar, overview and token table (v2 phase 4, Preact UI).
+   Adapts style.css to the new markup: real buttons and headings where
+   the old UI used clickable divs, token groups, inline editing.
+   ════════════════════════════════════════════════════════════════════════ */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Shared focus ring for custom controls */
+.set-item:focus-visible,
+.set-tree-group:focus-visible,
+.set-card-open:focus-visible,
+.th-sort-btn:focus-visible,
+.token-group-toggle:focus-visible,
+.context-menu-item:focus-visible,
+.icon-btn:focus-visible,
+.alias-chip:focus-visible {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: -1px;
+}
+
+.context-menu-item:focus-visible {
+  background-color: var(--background-tertiary);
+}
+
+.context-menu-item.is-disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.context-menu-item.is-disabled:hover {
+  background-color: transparent;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────── */
+
+h2.sidebar-label {
+  margin: 0;
+  font-size: var(--font-size-s);
+  font-weight: inherit;
+}
+
+.set-tree-group:focus-visible > .set-tree-group-row {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: -1px;
+}
+
+.set-tree-group:focus-visible {
+  outline: none;
+}
+
+.themes-list ul,
+.themes-group {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Themes were list items; they are buttons now. */
+button.theme-item {
+  width: 100%;
+  border: none;
+  border-left: 2px solid transparent;
+  background: none;
+  font-family: inherit;
+  text-align: left;
+}
+
+/* ── Main header ─────────────────────────────────────────────────────── */
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+h1.breadcrumb-set {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-select--narrow {
+  min-width: 0;
+  width: auto;
+}
+
+.main-header-right {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 6px;
+}
+
+/* ── Overview cards ──────────────────────────────────────────────────── */
+
+.sets-overview-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.set-card {
+  padding: 0 8px 0 0;
+}
+
+.set-card-open {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  padding: 11px 0 11px 14px;
+  border: none;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.set-card-active {
+  color: var(--accent-primary);
+  font-size: var(--font-size-xs);
+}
+
+/* ── Token table ─────────────────────────────────────────────────────── */
+
+.th-sortable {
+  position: relative;
+}
+
+.th-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.th-sort-btn .th-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.th-sortable:hover .sort-icon:not(.is-active),
+.th-sort-btn:focus-visible .sort-icon:not(.is-active) {
+  opacity: 0.4;
+}
+
+.token-row.is-selected {
+  background-color: var(--background-tertiary);
+}
+
+/* Groups (by name path or type) */
+.token-group-header {
+  display: block;
+  padding: 0;
+}
+
+.token-group-cell {
+  padding: 0;
+}
+
+.token-group-toggle,
+.token-group-cell > .token-group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 14px;
+  border: none;
+  background: none;
+  color: var(--foreground-secondary);
+  font-family: inherit;
+  font-weight: var(--font-weight-bold);
+  text-align: left;
+}
+
+.token-group-toggle {
+  cursor: pointer;
+}
+
+.token-group-toggle:hover {
+  color: var(--foreground-primary);
+}
+
+.token-group-toggle .token-group-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.token-group-count {
+  margin-left: 2px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background-color: var(--background-tertiary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-regular);
+}
+
+/* Inline value editing */
+.tcol-value--editable {
+  cursor: text;
+}
+
+.inline-value-input {
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding-block: 2px;
+  font-size: var(--font-size-s);
+}
+
+/* Row actions: apply-to-selection + menu */
+.tcol-actions {
+  gap: 2px;
+  padding-right: 4px;
+}
+
+.token-apply-btn {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.token-row:hover .token-apply-btn,
+.token-row:focus-within .token-apply-btn {
+  opacity: 1;
+}
+
+.bulk-clear-btn {
+  border: none;
+  background: none;
+  padding: 4px 8px;
+  color: var(--foreground-secondary);
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.bulk-clear-btn:hover {
+  color: var(--foreground-primary);
+  background-color: var(--background-tertiary);
+}
+
+/* ── Header + toolbar ────────────────────────────────────────────────── */
+
+/* The left block (breadcrumb) takes the free space and truncates; the
+   right block holds only the main action, so nothing gets squeezed. */
+.main-header {
+  min-height: 46px;
+}
+
+.main-header-left {
+  flex: 1;
+}
+
+.main-header-right {
+  flex-wrap: nowrap;
+}
+
+.breadcrumb {
+  flex: 0 1 auto;
+}
+
+.breadcrumb-prefix {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* Table options live in their own row under the header. */
+.tokens-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--background-quaternary);
+  flex-shrink: 0;
+  container-type: inline-size;
+}
+
+.toolbar-search {
+  flex: 1 1 200px;
+  min-width: 140px;
+}
+
+.toolbar-search .search-input {
+  width: 100%;
+  min-width: 0;
+}
+
+.toolbar-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.toolbar-field-label {
+  color: var(--foreground-secondary);
+  white-space: nowrap;
+}
+
+.toolbar-select {
+  width: auto;
+  min-width: 0;
+  max-width: 190px;
+  padding-right: 24px;
+}
+
+/* Narrow panel: the selects keep their aria-label and tooltip, the visible
+   labels go. */
+@container (max-width: 520px) {
+  .toolbar-field-label {
+    display: none;
+  }
+  .toolbar-select {
+    max-width: 150px;
+  }
+}
+
+/* Overview header: let the search shrink before anything else. */
+.view .main-header .search-wrapper .search-input {
+  min-width: 120px;
+}

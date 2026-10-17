@@ -23,7 +23,9 @@ A full-featured design token manager plugin for Penpot. Create, organize, and ma
 - **Find usages**: Select every shape on the page that uses a token
 - **Check tokens**: Lists broken references and circular aliases, applied tokens that no active set defines, and Penpot's file integrity errors
 - **Import / Export**: JSON in Penpot's format (DTCG / Tokens Studio), single set or all sets with themes; download or copy to the clipboard
-- **Sortable Table**: Sort tokens by name, value, resolved value or type
+- **Sortable Table**: Sort tokens by name, value, resolved value or type; group them by name path or type; resize columns
+- **Inline editing**: Double-click a simple value to edit it in place
+- **Keyboard friendly**: Navigable set tree, menus and dialogs; Escape closes only the topmost layer
 - **Penpot Theme Sync**: Automatically adapts to Penpot's light and dark theme
 
 ## How to Use
@@ -36,10 +38,10 @@ A full-featured design token manager plugin for Penpot. Create, organize, and ma
 
 ## Technical Details
 
-- Built with TypeScript and Vite
-- Uses the official Penpot Plugin API (`@penpot/plugin-types`)
+- Built with TypeScript and Vite; the UI uses Preact with signals (`src/ui/`)
+- Uses the official Penpot Plugin API (`@penpot/plugin-types`); the sandbox code is `src/plugin.ts`
+- Shared, unit-tested logic in `src/shared/`: message protocol, token resolver (aliases + math), DTCG import/export
 - Styled with `@penpot/plugin-styles` to match the native Penpot UI
-- No external runtime dependencies
 
 ## Installation
 
