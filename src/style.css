@@ -722,30 +722,6 @@ html.col-resizing * {
   flex: none;
 }
 
-/* Mini alias chip — used inside composite (typography/shadow) preview cells.
-   Non-interactive read-only display; no gear icon or hover state. */
-.alias-chip--mini {
-  display: inline-flex;
-  align-items: center;
-  padding: 0 4px;
-  height: 15px;
-  border-radius: 3px;
-  background-color: var(--background-tertiary);
-  border: 1px solid var(--background-quaternary);
-  max-width: 90px;
-  flex-shrink: 0;
-  cursor: default;
-}
-
-.alias-chip--mini .alias-chip-name {
-  font-size: 10px;
-  color: var(--accent-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 80px;
-}
-
 /* ── Composite token preview ─────────────────────────────────────────────
    Compact multi-property summary shown in Value and Resolved Value columns
    for composite token types (typography, shadow).
@@ -869,10 +845,6 @@ html.col-resizing * {
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
   overflow: hidden;
   min-width: 264px;
-}
-
-.alias-editor-hidden {
-  display: none;
 }
 
 /* ── Header row (swatch + input/preview + chevron) ── */
@@ -1253,10 +1225,6 @@ html.col-resizing * {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-}
-
-.modal-alias-picker--hidden {
-  display: none;
 }
 
 /* Shadow layers */
@@ -1687,10 +1655,6 @@ html.col-resizing * {
   user-select: none;
 }
 
-.cp-hidden {
-  display: none !important;
-}
-
 /* ── Saturation-Value area ─────────────────────────────────────────── */
 .cp-sv-area {
   position: relative;
@@ -1854,17 +1818,6 @@ html.col-resizing * {
    and cp-popover (850) so it's always reachable.
    ════════════════════════════════════════════════════════════════════════ */
 
-#font-picker-dropdown {
-  position: fixed;
-  z-index: 870;
-  background-color: var(--background-primary);
-  border: 1px solid var(--background-quaternary);
-  border-radius: 8px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
-  overflow-y: auto;
-  max-height: 260px;
-}
-
 .fp-section-header {
   position: sticky;
   top: 0;
@@ -1949,24 +1902,8 @@ html.col-resizing * {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   RESOLUTION CONTEXT, STATUS & TOASTS (v2 data layer)
+   RESOLUTION STATUS & TOASTS (v2 data layer)
    ════════════════════════════════════════════════════════════════════════ */
-
-.context-select-wrap {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.context-select-label {
-  color: var(--foreground-secondary);
-  white-space: nowrap;
-}
-
-.context-select {
-  max-width: 200px;
-}
 
 /* Resolved-value cell when the value can't be computed in the context */
 .token-resolved-issue {
@@ -2610,11 +2547,6 @@ html.col-resizing * {
 .import-set-meta {
   color: var(--foreground-secondary);
   white-space: nowrap;
-}
-
-#import-summary .form-field,
-#import-summary .checkbox-container {
-  margin-top: 10px;
 }
 
 @media (max-width: 480px) {

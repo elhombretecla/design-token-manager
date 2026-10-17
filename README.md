@@ -30,23 +30,29 @@ A full-featured design token manager plugin for Penpot. Create, organize, and ma
 
 ## How to Use
 
-1. **Create a token set** using the `+` button in the sidebar or the overview screen
-2. **Add tokens** by selecting a set and clicking `+ New token` — choose a type and fill in the name and value
-3. **Use aliases** by typing `{` in the value field to reference another token, or click the alias chip to open the picker
-4. **Organize with themes** using the gear icon at the bottom of the sidebar to create and manage themes
-5. **Bulk actions** — select multiple tokens via the row checkboxes, then move or duplicate them using the action bar that appears above the table
+1. **Create a token set** with the `+` button in the sidebar or on the overview screen — or **import** a JSON file (Penpot, DTCG or Tokens Studio format) with the upload button.
+2. **Add tokens**: open a set and click `+ New token`, pick a type and fill in the name and value. Double-click a simple value in the table to change it in place.
+3. **Reference other tokens** with `{token.name}`: type it, or use the alias button next to the value field. Click an alias chip in the table to change the reference.
+4. **Check the resolved values**: the *Resolve* selector above the table decides which sets resolve aliases and math — this set on top of the active ones, the active sets as Penpot sees them, or a theme.
+5. **Organize with themes**: the gear next to *Themes* opens the theme editor; click a theme in the sidebar to activate it. The checkbox next to each set turns it on or off in Penpot.
+6. **Apply tokens**: select shapes in Penpot, then use the apply button on a token row (or *Apply to selection…* in its menu) and choose the properties. The *Selection* panel at the bottom shows what's applied and lets you remove it.
+7. **Compare** sets or themes side by side from a set's menu (*Compare with…*); differences are highlighted.
+8. **Keep it healthy** with *Check tokens* (sidebar footer): broken references, circular aliases, applied tokens no active set defines, and file integrity errors.
 
 ## Technical Details
 
 - Built with TypeScript and Vite; the UI uses Preact with signals (`src/ui/`)
 - Uses the official Penpot Plugin API (`@penpot/plugin-types`); the sandbox code is `src/plugin.ts`
-- Shared, unit-tested logic in `src/shared/`: message protocol, token resolver (aliases + math), DTCG import/export
+- Shared, unit-tested logic in `src/shared/`: message protocol, token resolver (aliases + math), value conversion for each token type, DTCG import/export
 - Styled with `@penpot/plugin-styles` to match the native Penpot UI
 
 ## Installation
 
-1. Build the plugin: `npm run build`
-2. In Penpot, open the Plugin Manager (`Ctrl + Alt + P`) and load `http://localhost:4400/manifest.json`
+In Penpot, open the Plugin Manager (`Ctrl + Alt + P`) and install `https://design-token-manager.pages.dev/manifest.json`.
+
+To run your own build: `npm run build && npm run preview`, then install `http://localhost:4400/manifest.json`.
+
+The plugin asks for these permissions: read and write the file content and library (tokens, applying them to shapes), downloads (exporting JSON) and clipboard write (copying an export).
 
 ## Development
 
@@ -56,10 +62,13 @@ Requirements: Node.js `^20.19.0 || >=22.12.0` and a Penpot version whose plugin 
 npm install        # install dependencies
 npm run dev        # build in watch mode
 npm run build      # typecheck + production build
+npm run preview    # serve dist/ on http://localhost:4400
 npm run typecheck  # TypeScript only
 npm run lint       # ESLint
-npm test           # unit tests (Vitest)
+npm test           # unit tests (Vitest), including a UI smoke test
 ```
+
+Manual test checklist for a release: [docs/QA.md](docs/QA.md). Changes: [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
