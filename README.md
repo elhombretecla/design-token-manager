@@ -18,6 +18,11 @@ A full-featured design token manager plugin for Penpot. Create, organize, and ma
 - **Bulk Actions**: Select multiple tokens and move, duplicate or delete them in one action, with name-conflict handling (skip, keep both, replace)
 - **Safe renames**: Renaming or deleting a token shows which tokens reference it, and renames can update those references
 - **Multi-layer shadows**: Edit every layer of a shadow token
+- **Apply to selection**: Apply a token to the shapes selected in Penpot, choosing the properties (fill or stroke, paddings, corners…); warns when Penpot would resolve that name from another set
+- **Selection panel**: See the tokens applied to the selected shapes, jump to their definition, and remove them
+- **Find usages**: Select every shape on the page that uses a token
+- **Check tokens**: Lists broken references and circular aliases, applied tokens that no active set defines, and Penpot's file integrity errors
+- **Import / Export**: JSON in Penpot's format (DTCG / Tokens Studio), single set or all sets with themes; download or copy to the clipboard
 - **Sortable Table**: Sort tokens by name, value, resolved value or type
 - **Penpot Theme Sync**: Automatically adapts to Penpot's light and dark theme
 

@@ -9,6 +9,8 @@
     "content:read",
     "content:write",
     "library:read",
-    "library:write"
+    "library:write",
+    "allow:downloads",
+    "clipboard:write"
   ]
 }

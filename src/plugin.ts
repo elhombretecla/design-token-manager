@@ -5,8 +5,10 @@
 // ════════════════════════════════════════════════════════════════════════
 
 import type {
+  Shape,
   Token,
   TokenCatalog,
+  TokenProperty,
   TokenSet,
   TokenTheme,
   TokenType,
@@ -14,13 +16,16 @@ import type {
 } from "@penpot/plugin-types";
 import type {
   CatalogSnapshot,
+  ImportToken,
   Op,
   OpResult,
   PluginMessage,
+  SelectionInfo,
   SnapshotSet,
   SnapshotTheme,
   SnapshotToken,
   UiMessage,
+  ValidationReport,
 } from "./shared/protocol";
 
 // ── Open the plugin UI ────────────────────────────────────────────────
@@ -463,17 +468,15 @@ function serializeShadowResolvedValue(raw: unknown): string {
   return serializeShadowValue(raw);
 }
 
-// fontFamilies tokens require the value as a JS array per Penpot's Malli schema:
-//   [:or [:vector :app.common.schema/text]  alias-ref-re]
-// A plain string like "DM Sans" triggers :malli.core/invalid-type.
-// Alias references ("{token.path}") are kept as strings; everything else is
-// wrapped in a single-element array so Penpot receives ["DM Sans"].
+// fontFamilies tokens take a list of families. The UI edits them as one
+// "DM Sans, Inter" string, so split on commas like Penpot's own import does
+// (wrapping the whole string would create a single family "DM Sans, Inter").
+// Alias references ("{token.path}") are kept as strings.
 function fontFamilyValueForApi(value: string): string | string[] {
   const s = (value ?? "").trim();
-  // Alias reference: {font.primary} → keep as string, Penpot resolves it
   if (/^\{[^{}]+\}$/.test(s)) return s;
-  // Plain name → wrap in array
-  return s ? [s] : [""];
+  const families = s.split(",").map((f) => f.trim()).filter(Boolean);
+  return families.length > 0 ? families : [""];
 }
 
 // Shadow tokens must be written as TokenShadowValueString[] (an array).
@@ -507,16 +510,14 @@ function shadowValueForApi(val: unknown): unknown {
 //   • string  → alias reference (e.g. "{font.primary}")
 //   • string[] → literal font names (e.g. ["DM Sans"])
 //
-// The UI serialises fontFamilies as a plain string ("DM Sans"), so we must
-// wrap it in an array before writing to Penpot.  Without this, Penpot treats
-// "DM Sans" as an unresolvable alias and the font doesn't apply to shapes.
+// The UI serialises fontFamilies as a plain string ("DM Sans, Inter"), so it
+// goes through the same conversion as a standalone fontFamilies token.
 function normalizeTypographyFontFamilies(val: unknown): unknown {
   if (typeof val !== "object" || val === null) return val;
   const obj = val as Record<string, unknown>;
   const ff = obj.fontFamilies;
-  // Alias reference → leave as string; Penpot resolves it via the token graph.
-  if (typeof ff === "string" && ff.trim() && !/^\{[^{}]+\}$/.test(ff.trim())) {
-    return { ...obj, fontFamilies: [ff] };
+  if (typeof ff === "string" && ff.trim()) {
+    return { ...obj, fontFamilies: fontFamilyValueForApi(ff) };
   }
   return obj;
 }
@@ -738,7 +739,94 @@ async function addTokenWithDescription(
   token.description = description;
 }
 
-async function runOp(cat: TokenCatalog, op: Op): Promise<void> {
+// ── Shapes & applied tokens ───────────────────────────────────────────────
+
+function shapeTokens(shape: Shape): Record<string, string> {
+  try {
+    return { ...(shape.tokens as Record<string, string>) };
+  } catch {
+    return {};
+  }
+}
+
+function shapesById(ids: string[]): Shape[] {
+  const page = penpot.currentPage;
+  if (!page) return [];
+  return ids.map((id) => page.getShapeById(id)).filter((s): s is Shape => s !== null);
+}
+
+// Penpot applies tokens by name and resolves them with the active sets, so
+// the token used to remove an application should be the one that wins
+// there; fall back to any set that defines the name.
+function findTokenByName(cat: TokenCatalog, name: string): Token | undefined {
+  let winner: Token | undefined;
+  let any: Token | undefined;
+  for (const set of cat.sets) {
+    const token = set.tokens.find((t) => t.name === name);
+    if (!token) continue;
+    any ??= token;
+    if (set.active) winner = token;
+  }
+  return winner ?? any;
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+// Apply one property at a time: Penpot picks the shape updater from the
+// first property, so mixing groups (padding + gap) in one call misapplies.
+// Applying is a toggle, so properties every shape already has are skipped.
+function applyToken(token: Token, shapes: Shape[], properties: string[]): string {
+  if (shapes.length === 0) throw new Error("Select one or more shapes in Penpot first");
+  let applied = 0;
+  for (const prop of properties) {
+    if (shapes.every((s) => shapeTokens(s)[prop] === token.name)) continue;
+    token.applyToShapes(shapes, [prop as TokenProperty]);
+    applied++;
+  }
+  if (applied === 0) return `${token.name} was already applied`;
+  return `Applied ${token.name} to ${plural(shapes.length, "shape")}`;
+}
+
+async function importSet(cat: TokenCatalog, name: string, tokens: ImportToken[], mode: "skip" | "overwrite"): Promise<string> {
+  let set = cat.sets.find((s) => s.name === name);
+  if (!set) {
+    set = cat.addSet({ name });
+    await tick();
+  }
+  let created = 0, updated = 0, skipped = 0;
+  const failures: string[] = [];
+  for (const t of tokens) {
+    try {
+      const existing = set.tokens.find((x) => x.name === t.name);
+      if (existing && mode === "skip") { skipped++; continue; }
+      if (existing && existing.type === t.type) {
+        setTokenValue(existing, valueForApi(t.type, t.value));
+        existing.description = t.description;
+        updated++;
+        continue;
+      }
+      if (existing) existing.remove(); // type changed: replace
+      await addTokenWithDescription(set, {
+        type: t.type as TokenType,
+        name: t.name,
+        value: valueForApi(t.type, t.value),
+      }, t.description);
+      if (existing) updated++; else created++;
+    } catch (err) {
+      failures.push(`${t.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  if (failures.length > 0 && created + updated + skipped === 0) {
+    throw new Error(`"${name}": no tokens imported (${failures[0]})`);
+  }
+  const parts = [`${plural(created, "token")} created`];
+  if (updated) parts.push(`${updated} updated`);
+  if (skipped) parts.push(`${skipped} kept`);
+  if (failures.length) parts.push(`${failures.length} failed (${failures[0]})`);
+  return `"${name}": ${parts.join(", ")}`;
+}
+
+async function runOp(cat: TokenCatalog, op: Op): Promise<string | void> {
   switch (op.op) {
     case "create-set":
       cat.addSet({ name: op.name });
@@ -823,6 +911,10 @@ async function runOp(cat: TokenCatalog, op: Op): Promise<void> {
     case "create-theme": {
       const theme = cat.addTheme({ group: op.group, name: op.name });
       for (const setId of op.setIds ?? []) theme.addSet(setId);
+      for (const setName of op.setNames ?? []) {
+        const set = cat.sets.find((s) => s.name === setName);
+        if (set) theme.addSet(set);
+      }
       return;
     }
 
@@ -854,6 +946,48 @@ async function runOp(cat: TokenCatalog, op: Op): Promise<void> {
       for (const id of wanted) if (!current.has(id)) theme.addSet(id);
       return;
     }
+
+    case "apply-token": {
+      const token = requireToken(requireSet(cat, op.setId), op.tokenId);
+      return applyToken(token, penpot.selection, op.properties);
+    }
+
+    case "unapply-token": {
+      const token = findTokenByName(cat, op.tokenName);
+      if (!token) {
+        throw new Error(`No token named "${op.tokenName}" exists, and Penpot can only remove an application through its token`);
+      }
+      const shapes = shapesById(op.shapeIds);
+      for (const prop of op.properties) {
+        // Toggling off only happens when every shape has it applied.
+        const having = shapes.filter((s) => shapeTokens(s)[prop] === op.tokenName);
+        if (having.length > 0) token.applyToShapes(having, [prop as TokenProperty]);
+      }
+      return;
+    }
+
+    case "select-shapes": {
+      if (op.pageId && penpot.currentPage?.id !== op.pageId) {
+        await penpot.openPage(op.pageId);
+        await tick();
+      }
+      const shapes = shapesById(op.shapeIds);
+      if (shapes.length === 0) throw new Error("Those shapes are no longer in the file");
+      penpot.selection = shapes;
+      return;
+    }
+
+    case "select-token-usages": {
+      const shapes = (penpot.currentPage?.findShapes() ?? [])
+        .filter((s) => Object.values(shapeTokens(s)).includes(op.tokenName));
+      penpot.selection = shapes;
+      return shapes.length === 0
+        ? `No shapes on this page use ${op.tokenName}`
+        : `Selected ${plural(shapes.length, "shape")} using ${op.tokenName}`;
+    }
+
+    case "import-set":
+      return importSet(cat, op.name, op.tokens, op.mode);
   }
 }
 
@@ -862,8 +996,8 @@ async function runOps(reqId: number, ops: Op[]): Promise<void> {
   const results: OpResult[] = [];
   for (const op of ops) {
     try {
-      await runOp(cat, op);
-      results.push({ ok: true });
+      const message = await runOp(cat, op);
+      results.push(message ? { ok: true, message } : { ok: true });
     } catch (err) {
       console.error("[Token Manager plugin]", op.op, err);
       results.push({ ok: false, error: err instanceof Error ? err.message : String(err) });
@@ -873,6 +1007,76 @@ async function runOps(reqId: number, ops: Op[]): Promise<void> {
   }
   send({ type: "ops-result", reqId, results });
   schedulePublish();
+  // Applying tokens doesn't fire selectionchange; refresh the panel.
+  setTimeout(() => publishSelection(), 50);
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  SELECTION
+// ════════════════════════════════════════════════════════════════════════
+
+const SELECTION_DETAIL_MAX = 50;
+let lastSelectionJson = "";
+
+function buildSelection(): SelectionInfo {
+  const selection = penpot.selection ?? [];
+  return {
+    total: selection.length,
+    shapes: selection.slice(0, SELECTION_DETAIL_MAX).map((shape) => ({
+      id: shape.id,
+      name: shape.name,
+      type: shape.type,
+      tokens: shapeTokens(shape),
+    })),
+  };
+}
+
+function publishSelection(force = false): void {
+  try {
+    const selection = buildSelection();
+    const json = JSON.stringify(selection);
+    if (!force && json === lastSelectionJson) return;
+    lastSelectionJson = json;
+    send({ type: "selection", selection });
+  } catch (err) {
+    console.error("[Token Manager plugin] Selection failed", err);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  VALIDATION
+// ════════════════════════════════════════════════════════════════════════
+
+function buildValidationReport(): ValidationReport {
+  const page = penpot.currentPage;
+  const file = penpot.currentFile;
+  const validateAvailable = typeof file?.validate === "function";
+  let fileIssues: ValidationReport["fileIssues"] = [];
+  if (file && validateAvailable) {
+    try {
+      fileIssues = file.validate().map((e) => ({
+        code: e.code, hint: e.hint, shapeId: e.shapeId, pageId: e.pageId,
+      }));
+    } catch (err) {
+      fileIssues = [{ code: "validation-error", hint: String(err), shapeId: null, pageId: null }];
+    }
+  }
+
+  const usage = new Map<string, Set<string>>();
+  for (const shape of page?.findShapes() ?? []) {
+    for (const name of Object.values(shapeTokens(shape))) {
+      if (!usage.has(name)) usage.set(name, new Set());
+      usage.get(name)!.add(shape.id);
+    }
+  }
+
+  return {
+    validateAvailable,
+    fileIssues,
+    pageId: page?.id ?? "",
+    pageName: page?.name ?? "",
+    applied: [...usage].map(([name, ids]) => ({ name, shapeIds: [...ids] })),
+  };
 }
 
 function scanDocumentFonts(): string[] {
@@ -910,8 +1114,23 @@ penpot.ui.onMessage<UiMessage>((msg) => {
 
   switch (msg?.type) {
     case "init":
+      // The URL carries the theme too, but confirm it in case it was lost.
+      send({ source: "penpot", type: "themechange", theme: penpot.theme });
       publishSnapshot(true);
+      publishSelection(true);
       break;
+
+    case "validate": {
+      let report: ValidationReport;
+      try {
+        report = buildValidationReport();
+      } catch (err) {
+        send({ type: "error", message: `Validation failed: ${String(err)}` });
+        report = { validateAvailable: false, fileIssues: [], pageId: "", pageName: "", applied: [] };
+      }
+      send({ type: "validation", reqId: msg.reqId, report });
+      break;
+    }
 
     case "ops":
       void runOps(msg.reqId, msg.ops);
@@ -936,4 +1155,9 @@ penpot.on("themechange", (theme) => {
 });
 
 penpot.on("contentsave", () => publishSnapshot());
-setInterval(() => publishSnapshot(), POLL_INTERVAL_MS);
+penpot.on("selectionchange", () => publishSelection());
+// Also catches token (un)applications made from Penpot's own panel.
+setInterval(() => {
+  publishSnapshot();
+  publishSelection();
+}, POLL_INTERVAL_MS);

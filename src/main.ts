@@ -1,7 +1,11 @@
 import "./style.css";
 import { FONT_CATALOG } from "./assets/fontCatalog.generated";
 import type { SerializedSet, SerializedToken, SerializedTheme, AliasPickerSet, SortKey } from "./shared/types";
-import type { CatalogSnapshot, Op, OpResult, PluginMessage, SnapshotSet, SnapshotToken, UiMessage } from "./shared/protocol";
+import type {
+  CatalogSnapshot, Op, OpResult, PluginMessage, SelectionInfo, SnapshotSet, SnapshotToken, UiMessage, ValidationReport,
+} from "./shared/protocol";
+import { exportMultiSet, exportSingleSet, parseTokenFile, setNameFromFileName, type ImportResult } from "./shared/dtcg";
+import { propertiesForType, propertyLabel } from "./shared/tokenProperties";
 import { Resolver, type ResolveContext } from "./shared/resolver";
 import { esc } from "./utils/esc";
 import { isAlias, parseMixedValue, referencesName, replaceReference } from "./utils/alias";
@@ -31,6 +35,8 @@ const state = {
   sortKey: "type" as SortKey | null,
   sortDir: "asc" as "asc" | "desc",
   documentFonts: [] as string[],
+  /** Shapes selected in Penpot, with their applied tokens. */
+  selection: { shapes: [], total: 0 } as SelectionInfo,
 };
 
 // ── Bulk-selection state ──────────────────────────────────────────────────
@@ -258,9 +264,21 @@ function initColResize(): void {
 //  BOOTSTRAP
 // ════════════════════════════════════════════════════════════════════════
 
-// Sync theme from URL param (Penpot passes ?theme=dark|light)
-const params = new URLSearchParams(window.location.search);
-document.body.dataset.theme = params.get("theme") ?? "light";
+// Initial theme from the URL. With manifest "version": 2 Penpot moves the
+// query string into the hash (index.html#/?theme=dark), so read both.
+// Older Penpot reports its dark theme as "default".
+function themeFromUrl(): string {
+  const hashQuery = window.location.hash.split("?")[1] ?? "";
+  const theme = new URLSearchParams(window.location.search).get("theme")
+    ?? new URLSearchParams(hashQuery).get("theme");
+  return normalizeTheme(theme ?? "light");
+}
+
+function normalizeTheme(theme: string): string {
+  return theme === "light" ? "light" : "dark";
+}
+
+document.body.dataset.theme = themeFromUrl();
 
 document.addEventListener("DOMContentLoaded", () => {
   initColResize();
@@ -408,6 +426,8 @@ function applySnapshot(snapshot: CatalogSnapshot): void {
   renderOverview();
   renderContextSelect();
   renderThemesModal();
+  renderSelectionPanel();
+  renderApplyTokenModal();
 
   if (state.selectedSetId && !snapshotSet(state.selectedSetId)) {
     selectSet(null); // also exits compare mode
@@ -462,6 +482,8 @@ function runOps(ops: Op[]): Promise<OpResult[]> {
     } else if (failures.length > 0) {
       showToast(`${failures.length} of ${ops.length} operations failed: ${failures[0].error ?? ""}`, "error");
     }
+    const messages = results.filter((r) => r.ok && r.message).map((r) => r.message!);
+    if (messages.length > 0) showToast(messages.join(" · "));
     return results;
   });
 }
@@ -492,7 +514,7 @@ window.addEventListener("message", (event: MessageEvent) => {
 
   switch (msg?.type) {
     case "themechange":
-      document.body.dataset.theme = msg.theme;
+      document.body.dataset.theme = normalizeTheme(msg.theme);
       break;
 
     case "snapshot":
@@ -503,6 +525,19 @@ window.addEventListener("message", (event: MessageEvent) => {
       const resolve = pendingRequests.get(msg.reqId);
       pendingRequests.delete(msg.reqId);
       resolve?.(msg.results);
+      break;
+    }
+
+    case "selection":
+      state.selection = msg.selection;
+      renderSelectionPanel();
+      renderApplyTokenModal();
+      break;
+
+    case "validation": {
+      const resolve = pendingValidations.get(msg.reqId);
+      pendingValidations.delete(msg.reqId);
+      resolve?.(msg.report);
       break;
     }
 
@@ -1932,7 +1967,7 @@ function showContextMenu(x: number, y: number, items: MenuItem[]): void {
   const dividerCount = items.filter((i) => i.divider).length;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const mW = 160;
+  const mW = 200;
   const mH = items.length * 38 + dividerCount * 9 + 8;
   menu.style.left = `${Math.min(x, vw - mW - 4)}px`;
   menu.style.top = `${Math.min(y, vh - mH - 4)}px`;
@@ -1968,6 +2003,9 @@ const ICON_DUPLICATE = `<svg width="13" height="13" viewBox="0 0 16 16" fill="no
 const ICON_DELETE = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 5h10M6 5V3h4v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 5 12 13H4L3 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const ICON_EDIT = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10.5 2.5 13.5 5.5 6 13H3v-3l7.5-7.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>`;
 const ICON_MOVE = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13 8H3M10 5l3 3-3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ICON_APPLY = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="m5.5 8.25 1.75 1.75 3.25-3.75" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ICON_TARGET = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 3l4 10 1.5-4.5L13 7 3 3Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>`;
+const ICON_EXPORT = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v7M5.5 7.5 8 10l2.5-2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 11.5V13h10v-1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const ICON_COMPARE = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="3" width="5" height="10" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9.5" y="3" width="5" height="10" rx="1" stroke="currentColor" stroke-width="1.3"/></svg>`;
 
 function showSetContextMenu(e: MouseEvent, setId: string): void {
@@ -1996,13 +2034,29 @@ function showSetContextMenu(e: MouseEvent, setId: string): void {
       divider: true,
       action: () => enterCompareMode(setId),
     },
+    {
+      label: "Export",
+      icon: ICON_EXPORT,
+      action: () => showExportModal(setId),
+    },
   ]);
 }
 
 function showTokenContextMenu(e: MouseEvent, token: SerializedToken): void {
   showContextMenu(e.clientX, e.clientY, [
     {
+      label: "Apply to selection…",
+      icon: ICON_APPLY,
+      action: () => showApplyTokenModal(token),
+    },
+    {
+      label: "Select shapes using it",
+      icon: ICON_TARGET,
+      action: () => void runOps([{ op: "select-token-usages", tokenName: token.name }]),
+    },
+    {
       label: "Edit",
+      divider: true,
       icon: ICON_EDIT,
       action: () => showEditTokenModal(token),
     },
@@ -2049,6 +2103,9 @@ function showModal(html: string): void {
 
 function closeModal(): void {
   themesModal = null;
+  applyModal = null;
+  checkModalOpen = false;
+  importDraft = null;
   closeModalAliasPicker();
   closeFontPicker();
   el("modal-overlay").classList.add("hidden");
@@ -2110,6 +2167,10 @@ function showNewSetModal(): void {
   };
 
   confirmBtn.addEventListener("click", doCreate);
+  el("upload-set-btn").addEventListener("click", () => {
+    closeModal();
+    showImportModal();
+  });
   nameInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") doCreate();
     if (e.key === "Escape") closeModal();
@@ -3883,6 +3944,694 @@ function removeComparedSet(setId: string): void {
 }
 
 // ════════════════════════════════════════════════════════════════════════
+//  SELECTION PANEL
+//  Shows the shapes selected in Penpot and the tokens applied to them.
+//  Penpot applies tokens by name and resolves them with the active sets,
+//  so applied tokens are looked up and resolved in that context here.
+// ════════════════════════════════════════════════════════════════════════
+
+const SELECTION_OPEN_KEY = "dtm-selection-open";
+
+let selectionOpen = (() => {
+  try { return localStorage.getItem(SELECTION_OPEN_KEY) === "1"; } catch { return false; }
+})();
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** Resolver for Penpot's own context (the active sets), whatever the view mode. */
+function activeResolver(): Resolver {
+  let r = resolverCache.get("penpot-active");
+  if (!r) {
+    r = Resolver.forContext(state.snapshot, { kind: "active" });
+    resolverCache.set("penpot-active", r);
+  }
+  return r;
+}
+
+interface NameLocation {
+  token: SnapshotToken;
+  set: SnapshotSet;
+  /** False when only inactive sets define the name. */
+  active: boolean;
+}
+
+/** Where Penpot would take a token name from (or any set defining it). */
+function locateTokenName(name: string): NameLocation | null {
+  const winner = activeResolver().winner(name);
+  if (winner) {
+    const set = state.snapshot.sets.find((s) => s.tokens.some((t) => t.id === winner.id));
+    if (set) return { token: winner, set, active: true };
+  }
+  for (const set of state.snapshot.sets) {
+    const token = set.tokens.find((t) => t.name === name);
+    if (token) return { token, set, active: false };
+  }
+  return null;
+}
+
+/** Open a set and scroll to (and briefly highlight) one of its tokens. */
+function revealToken(setId: string, tokenId: string): void {
+  if (compareState.active) exitCompareModeQuiet();
+  const search = el<HTMLInputElement>("tokens-search-input");
+  if (search) search.value = "";
+  if (state.selectedSetId !== setId) selectSet(setId);
+  else renderTokenTable();
+  requestAnimationFrame(() => {
+    const row = document.querySelector<HTMLElement>(`.token-row[data-token-id="${CSS.escape(tokenId)}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: "center" });
+    row.classList.add("token-row--flash");
+    setTimeout(() => row.classList.remove("token-row--flash"), 1600);
+  });
+}
+
+function shortValue(type: string, value: string | undefined): string {
+  if (value === undefined) return "";
+  if (type === "typography" || type === "shadow") return type;
+  return value.length > 28 ? `${value.slice(0, 27)}…` : value;
+}
+
+function selectionTokenHtml(shapeId: string, prop: string, name: string): string {
+  const loc = locateTokenName(name);
+  const r = loc?.active ? activeResolver().resolveName(name) : undefined;
+  let status = "ok";
+  let title = `Show ${name}`;
+  if (!loc) {
+    status = "missing";
+    title = `No set defines ${name}`;
+  } else if (!loc.active) {
+    status = "inactive";
+    title = `${name} is only defined in inactive sets ("${loc.set.name}"), so Penpot can't resolve it`;
+  } else if (r && r.status !== "ok") {
+    status = "broken";
+    title = `${name} doesn't resolve with the active sets`;
+  }
+  const swatch = loc?.token.type === "color" && r?.value
+    ? `<span class="color-swatch" style="background:${esc(r.value)}" aria-hidden="true"></span>`
+    : "";
+  return `
+    <li class="sel-token">
+      <span class="sel-prop body-s">${esc(propertyLabel(prop))}</span>
+      <button type="button" class="sel-chip sel-chip--${status}" data-reveal-name="${esc(name)}" title="${esc(title)}">${esc(name)}</button>
+      <span class="sel-value body-s">${swatch}${esc(shortValue(loc?.token.type ?? "", r?.value))}</span>
+      <button type="button" class="icon-btn sel-remove" title="Remove from this shape"
+              aria-label="Remove ${esc(name)} from ${esc(propertyLabel(prop))}"
+              data-unapply-shape="${esc(shapeId)}" data-unapply-prop="${esc(prop)}" data-unapply-name="${esc(name)}">
+        <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M4 4 12 12M12 4 4 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </li>`;
+}
+
+function renderSelectionPanel(): void {
+  const { shapes, total } = state.selection;
+  const applied = shapes.reduce((n, s) => n + Object.keys(s.tokens).length, 0);
+  el("selection-summary").textContent =
+    total === 0 ? "No shapes selected" : `${plural(total, "shape")} · ${plural(applied, "applied token")}`;
+  el("selection-bar").setAttribute("aria-expanded", String(selectionOpen));
+  el("selection-panel").classList.toggle("is-open", selectionOpen);
+
+  const body = el("selection-body");
+  body.classList.toggle("hidden", !selectionOpen);
+  if (!selectionOpen) return;
+
+  if (total === 0) {
+    body.innerHTML = `<p class="body-s selection-empty">Select shapes in Penpot to see their tokens here.
+      To apply a token, use <strong>Apply to selection…</strong> in its menu.</p>`;
+    return;
+  }
+
+  body.innerHTML = shapes.map((shape) => {
+    const entries = Object.entries(shape.tokens);
+    return `
+      <div class="sel-shape">
+        <div class="sel-shape-head body-s">
+          <span class="sel-shape-name">${esc(shape.name)}</span>
+          <span class="sel-shape-type">${esc(shape.type)}</span>
+        </div>
+        ${entries.length === 0
+          ? `<p class="sel-none body-s">No tokens applied</p>`
+          : `<ul class="sel-tokens">${entries.map(([prop, name]) => selectionTokenHtml(shape.id, prop, name)).join("")}</ul>`}
+      </div>`;
+  }).join("") + (total > shapes.length
+    ? `<p class="body-s selection-empty">…and ${plural(total - shapes.length, "more shape")}</p>`
+    : "");
+
+  body.querySelectorAll<HTMLElement>("[data-reveal-name]").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const loc = locateTokenName(chip.dataset.revealName!);
+      if (loc) revealToken(loc.set.id, loc.token.id);
+      else showToast(`No set defines ${chip.dataset.revealName}`, "error");
+    });
+  });
+  body.querySelectorAll<HTMLElement>("[data-unapply-shape]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      void runOps([{
+        op: "unapply-token",
+        tokenName: btn.dataset.unapplyName!,
+        shapeIds: [btn.dataset.unapplyShape!],
+        properties: [btn.dataset.unapplyProp!],
+      }]);
+    });
+  });
+}
+
+function toggleSelectionPanel(): void {
+  selectionOpen = !selectionOpen;
+  try { localStorage.setItem(SELECTION_OPEN_KEY, selectionOpen ? "1" : "0"); } catch { /* ignore */ }
+  renderSelectionPanel();
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  MODAL: APPLY TOKEN TO SELECTION
+//  Re-renders live as the selection in Penpot changes.
+// ════════════════════════════════════════════════════════════════════════
+
+let applyModal: { setId: string; tokenId: string; checked: Set<string> } | null = null;
+
+function showApplyTokenModal(token: SerializedToken): void {
+  if (!state.selectedSetId) return;
+  applyModal = {
+    setId: state.selectedSetId,
+    tokenId: token.id,
+    checked: new Set(propertiesForType(token.type).defaults),
+  };
+  showModal(`
+    <div class="modal-header">
+      <h2 class="modal-title">Apply token</h2>
+      ${CLOSE_BTN_SVG}
+    </div>
+    <div id="apply-modal-root"></div>`);
+  renderApplyTokenModal();
+}
+
+function renderApplyTokenModal(): void {
+  const root = document.getElementById("apply-modal-root");
+  if (!applyModal || !root) return;
+  const modal = applyModal;
+  const set = snapshotSet(modal.setId);
+  const token = set?.tokens.find((t) => t.id === modal.tokenId);
+  if (!set || !token) { closeModal(); return; }
+
+  const { shapes, total } = state.selection;
+  const fullyApplied = (prop: string) => shapes.length > 0 && shapes.every((s) => s.tokens[prop] === token.name);
+  const pendingProps = () => [...modal.checked].filter((p) => !fullyApplied(p));
+  const pending = pendingProps();
+
+  // Penpot applies by name and resolves with the active sets: say so when
+  // that isn't this token.
+  let warning = "";
+  const winner = activeResolver().winner(token.name);
+  if (!winner) {
+    warning = `"${esc(set.name)}" isn't active. Penpot applies tokens by name and resolves them with the
+      active sets, so the shapes won't take this value until a set defining <strong>${esc(token.name)}</strong> is active.`;
+  } else if (winner.id !== token.id) {
+    const winSet = state.snapshot.sets.find((s) => s.tokens.some((t) => t.id === winner.id));
+    const value = activeResolver().resolveName(token.name).value;
+    warning = `Penpot applies tokens by name: with the current active sets, <strong>${esc(token.name)}</strong>
+      comes from "${esc(winSet?.name ?? "")}"${value ? ` (${esc(shortValue(token.type, value))})` : ""}, not from this set.`;
+  }
+
+  const groups = propertiesForType(token.type).groups.map((g) => `
+    <fieldset class="apply-group">
+      <legend class="apply-group-label body-s">${esc(g.label)}</legend>
+      ${g.props.map((p) => {
+        const applied = fullyApplied(p.key);
+        return `
+          <label class="checkbox-container body-s apply-prop">
+            <input type="checkbox" class="checkbox-input apply-prop-cb" value="${esc(p.key)}"
+                   ${applied || modal.checked.has(p.key) ? "checked" : ""} ${applied ? "disabled" : ""} />
+            <span>${esc(p.label)}</span>
+            ${applied ? `<span class="cprop-badge cprop-badge--accent apply-applied">Applied</span>` : ""}
+          </label>`;
+      }).join("")}
+    </fieldset>`).join("");
+
+  root.innerHTML = `
+    <div class="modal-body">
+      <p class="body-s">
+        ${total === 0
+          ? `Select one or more shapes in Penpot to apply <strong>${esc(token.name)}</strong>.`
+          : `Apply <strong>${esc(token.name)}</strong> to <strong>${plural(total, "selected shape")}</strong>.`}
+      </p>
+      ${warning ? `<p class="body-s modal-warning">${warning}</p>` : ""}
+      <div class="apply-groups">${groups}</div>
+      <p class="body-s modal-hint">To remove an applied token, use the Selection panel at the bottom.</p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" data-appearance="secondary" data-modal-close>Cancel</button>
+      <button type="button" data-appearance="primary" id="confirm-apply-btn"
+              ${total === 0 || pending.length === 0 ? "disabled" : ""}>Apply</button>
+    </div>`;
+
+  root.querySelector("[data-modal-close]")?.addEventListener("click", closeModal);
+  root.querySelectorAll<HTMLInputElement>(".apply-prop-cb").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      if (cb.checked) modal.checked.add(cb.value); else modal.checked.delete(cb.value);
+      el<HTMLButtonElement>("confirm-apply-btn").disabled = total === 0 || pendingProps().length === 0;
+    });
+  });
+  el("confirm-apply-btn").addEventListener("click", () => {
+    void runOps([{ op: "apply-token", setId: modal.setId, tokenId: modal.tokenId, properties: pendingProps() }]);
+    closeModal();
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  MODAL: CHECK TOKENS
+//  Token values that don't resolve (each set viewed on top of the active
+//  sets), tokens applied on this page that no active set defines, and
+//  Penpot's own file integrity check.
+// ════════════════════════════════════════════════════════════════════════
+
+const pendingValidations = new Map<number, (report: ValidationReport) => void>();
+let checkModalOpen = false;
+
+function requestValidation(): Promise<ValidationReport> {
+  const reqId = nextReqId++;
+  return new Promise((resolve) => {
+    pendingValidations.set(reqId, resolve);
+    sendToPlugin({ type: "validate", reqId });
+  });
+}
+
+interface TokenIssue {
+  set: SnapshotSet;
+  token: SnapshotToken;
+  problem: string;
+}
+
+function collectTokenIssues(): TokenIssue[] {
+  const issues: TokenIssue[] = [];
+  for (const set of state.snapshot.sets) {
+    const resolver = Resolver.forContext(state.snapshot, { kind: "set-on-top", setId: set.id });
+    for (const token of set.tokens) {
+      const r = resolver.resolveToken(token);
+      if (r.status === "ok") continue;
+      const problem =
+        r.status === "broken" ? `Missing ${r.missing.map((m) => `{${m}}`).join(", ")}`
+        : r.status === "cycle" ? "Circular reference"
+        : r.error ?? "Invalid value";
+      issues.push({ set, token, problem });
+    }
+  }
+  return issues;
+}
+
+const CHECK_LIST_MAX = 100;
+
+function checkSectionHtml(title: string, count: number | null, body: string): string {
+  const badge = count === null ? "" : `<span class="check-count${count > 0 ? " check-count--bad" : ""}">${count}</span>`;
+  return `
+    <section class="check-section">
+      <h3 class="check-title body-s">${esc(title)} ${badge}</h3>
+      ${body}
+    </section>`;
+}
+
+function tokenIssuesHtml(issues: TokenIssue[]): string {
+  if (issues.length === 0) return `<p class="body-s check-ok">Every token resolves.</p>`;
+  return `<ul class="check-list">${issues.slice(0, CHECK_LIST_MAX).map((i) => `
+    <li class="check-item">
+      <button type="button" class="check-link" data-reveal-set="${esc(i.set.id)}" data-reveal-token="${esc(i.token.id)}">
+        <span class="check-set">${esc(i.set.name)} /</span> ${esc(i.token.name)}
+      </button>
+      <span class="check-problem body-s">${esc(i.problem)}</span>
+    </li>`).join("")}</ul>
+    ${issues.length > CHECK_LIST_MAX ? `<p class="body-s modal-hint">…and ${issues.length - CHECK_LIST_MAX} more</p>` : ""}`;
+}
+
+function appliedIssuesHtml(report: ValidationReport): { html: string; count: number } {
+  const rows = report.applied
+    .map((a) => ({ ...a, loc: locateTokenName(a.name) }))
+    .filter((a) => !a.loc || !a.loc.active)
+    .map((a) => `
+      <li class="check-item">
+        <span class="check-name">${esc(a.name)}</span>
+        <span class="check-problem body-s">${a.loc
+          ? `Only in inactive sets ("${esc(a.loc.set.name)}")`
+          : "No set defines this token"}</span>
+        <button type="button" class="check-action" data-select-shapes="${esc(a.shapeIds.join(","))}"
+                data-select-page="${esc(report.pageId)}">Select ${plural(a.shapeIds.length, "shape")}</button>
+      </li>`);
+  const html = rows.length === 0
+    ? `<p class="body-s check-ok">${report.applied.length === 0
+        ? "No tokens are applied on this page."
+        : `All ${plural(report.applied.length, "applied token")} resolve with the active sets.`}</p>`
+    : `<ul class="check-list">${rows.join("")}</ul>`;
+  return { html, count: rows.length };
+}
+
+function fileIssuesHtml(report: ValidationReport): string {
+  if (!report.validateAvailable) {
+    return `<p class="body-s modal-hint">This version of Penpot can't validate files from plugins.</p>`;
+  }
+  if (report.fileIssues.length === 0) return `<p class="body-s check-ok">No integrity errors found.</p>`;
+  return `<ul class="check-list">${report.fileIssues.slice(0, CHECK_LIST_MAX).map((i) => `
+    <li class="check-item">
+      <span class="check-name">${esc(i.code)}</span>
+      <span class="check-problem body-s">${esc(i.hint)}</span>
+      ${i.shapeId ? `<button type="button" class="check-action" data-select-shapes="${esc(i.shapeId)}"
+                       data-select-page="${esc(i.pageId ?? "")}">Select shape</button>` : ""}
+    </li>`).join("")}</ul>`;
+}
+
+function bindCheckModalLinks(root: HTMLElement): void {
+  root.querySelectorAll<HTMLElement>("[data-reveal-token]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      closeModal();
+      revealToken(btn.dataset.revealSet!, btn.dataset.revealToken!);
+    });
+  });
+  root.querySelectorAll<HTMLElement>("[data-select-shapes]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      void runOps([{
+        op: "select-shapes",
+        shapeIds: btn.dataset.selectShapes!.split(","),
+        pageId: btn.dataset.selectPage || undefined,
+      }]);
+    });
+  });
+}
+
+function showCheckModal(): void {
+  const issues = collectTokenIssues();
+  const loading = `<p class="body-s modal-hint">Checking…</p>`;
+  showModal(`
+    <div class="modal-header">
+      <h2 class="modal-title">Check tokens</h2>
+      ${CLOSE_BTN_SVG}
+    </div>
+    <div class="modal-body check-modal">
+      ${checkSectionHtml("Token values", issues.length, tokenIssuesHtml(issues))}
+      <div id="check-applied">${checkSectionHtml("Applied tokens on this page", null, loading)}</div>
+      <div id="check-file">${checkSectionHtml("File integrity", null, loading)}</div>
+    </div>`);
+  el("modal-container").classList.add("modal--wide");
+  checkModalOpen = true;
+  bindCheckModalLinks(el("modal-container"));
+
+  void requestValidation().then((report) => {
+    if (!checkModalOpen) return;
+    const applied = appliedIssuesHtml(report);
+    const appliedRoot = el("check-applied");
+    const fileRoot = el("check-file");
+    appliedRoot.innerHTML = checkSectionHtml(
+      `Applied tokens on page "${report.pageName}"`, applied.count, applied.html);
+    fileRoot.innerHTML = checkSectionHtml(
+      "File integrity", report.validateAvailable ? report.fileIssues.length : null, fileIssuesHtml(report));
+    bindCheckModalLinks(appliedRoot);
+    bindCheckModalLinks(fileRoot);
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  EXPORT
+// ════════════════════════════════════════════════════════════════════════
+
+function downloadText(fileName: string, text: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Clipboard API blocked (no clipboard permission): legacy fallback.
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  }
+}
+
+function fileNameForSet(name: string): string {
+  return `${name.replace(/\//g, "-")}.json`;
+}
+
+function showExportModal(preferSetId: string | null = state.selectedSetId): void {
+  const sets = state.snapshot.sets;
+  if (sets.length === 0) {
+    showToast("There are no tokens to export yet");
+    return;
+  }
+  const initialSet = preferSetId && snapshotSet(preferSetId) ? preferSetId : sets[0].id;
+  showModal(`
+    <div class="modal-header">
+      <h2 class="modal-title">Export tokens</h2>
+      ${CLOSE_BTN_SVG}
+    </div>
+    <div class="modal-body">
+      <div class="export-scope">
+        <label class="radio-container">
+          <input type="radio" class="radio-input" name="export-scope" value="all" ${preferSetId ? "" : "checked"} />
+          <span class="radio-label body-s">All sets, with themes (${plural(sets.length, "set")})</span>
+        </label>
+        <label class="radio-container">
+          <input type="radio" class="radio-input" name="export-scope" value="set" ${preferSetId ? "checked" : ""} />
+          <span class="radio-label body-s">One set</span>
+        </label>
+        <select class="select export-set-select" id="export-set-select" aria-label="Set to export">
+          ${sets.map((s) => `<option value="${esc(s.id)}" ${s.id === initialSet ? "selected" : ""}>${esc(s.name)}</option>`).join("")}
+        </select>
+      </div>
+      <p class="body-s modal-hint">Same JSON format Penpot uses (DTCG / Tokens Studio), so the file can be
+        imported back into Penpot or other tools.</p>
+      <div id="export-warnings"></div>
+      <textarea class="input export-preview" id="export-preview" readonly spellcheck="false" aria-label="Exported JSON"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button type="button" data-appearance="secondary" id="export-copy-btn">Copy</button>
+      <button type="button" data-appearance="primary" id="export-download-btn">Download</button>
+    </div>`);
+  el("modal-container").classList.add("modal--wide");
+
+  let text = "";
+  let fileName = "tokens.json";
+  const update = () => {
+    const scope = el("modal-container").querySelector<HTMLInputElement>('input[name="export-scope"]:checked')?.value;
+    const select = el<HTMLSelectElement>("export-set-select");
+    select.disabled = scope !== "set";
+    const set = snapshotSet(select.value);
+    const result = scope === "set" && set ? exportSingleSet(set) : exportMultiSet(state.snapshot);
+    fileName = scope === "set" && set ? fileNameForSet(set.name) : "tokens.json";
+    text = JSON.stringify(result.data, null, 2);
+    el<HTMLTextAreaElement>("export-preview").value = text;
+    el("export-warnings").innerHTML = result.warnings.length
+      ? `<div class="body-s modal-warning">${result.warnings.map(esc).join("<br>")}</div>`
+      : "";
+  };
+  el("modal-container").querySelectorAll('input[name="export-scope"]').forEach((r) => r.addEventListener("change", update));
+  el("export-set-select").addEventListener("change", update);
+  update();
+
+  el("export-copy-btn").addEventListener("click", () => {
+    void copyText(text).then((ok) => showToast(ok ? "Copied to the clipboard" : "Couldn't copy; select the text and copy it", ok ? "info" : "error"));
+  });
+  el("export-download-btn").addEventListener("click", () => downloadText(fileName, text));
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  IMPORT
+// ════════════════════════════════════════════════════════════════════════
+
+interface ImportDraft {
+  data: unknown;
+  forceMultiSet: boolean;
+  setName: string;
+}
+
+let importDraft: ImportDraft | null = null;
+let importFileName = "imported";
+
+function parseDraft(draft: ImportDraft): ImportResult {
+  return parseTokenFile(draft.data, draft.setName, draft.forceMultiSet);
+}
+
+function loadImportText(text: string, fileName: string): void {
+  const status = el("import-summary");
+  if (!text.trim()) {
+    importDraft = null;
+    el("import-options").innerHTML = "";
+    status.innerHTML = "";
+    el<HTMLButtonElement>("confirm-import-btn").disabled = true;
+    return;
+  }
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch (err) {
+    importDraft = null;
+    el("import-options").innerHTML = "";
+    status.innerHTML = `<p class="body-s modal-warning">Not valid JSON: ${esc(err instanceof Error ? err.message : String(err))}</p>`;
+    el<HTMLButtonElement>("confirm-import-btn").disabled = true;
+    return;
+  }
+  importDraft = { data, forceMultiSet: false, setName: setNameFromFileName(fileName) };
+  importFileName = fileName;
+  renderImportOptions();
+}
+
+// Options (set name, "keys are sets") are re-rendered only when the file
+// changes, so typing in them doesn't lose focus; the summary follows them.
+function renderImportOptions(): void {
+  const draft = importDraft;
+  if (!draft) return;
+  let result: ImportResult;
+  try {
+    result = parseDraft(draft);
+  } catch (err) {
+    el("import-options").innerHTML = "";
+    el("import-summary").innerHTML = `<p class="body-s modal-warning">${esc(err instanceof Error ? err.message : String(err))}</p>`;
+    el<HTMLButtonElement>("confirm-import-btn").disabled = true;
+    return;
+  }
+  el("import-options").innerHTML = `
+    ${result.ambiguous ? `
+      <label class="checkbox-container body-s">
+        <input type="checkbox" class="checkbox-input" id="import-force-multi" ${draft.forceMultiSet ? "checked" : ""} />
+        <span>Top-level groups are sets</span>
+      </label>` : ""}
+    ${!result.multiSet ? `
+      <div class="form-field">
+        <label class="form-label" for="import-set-name">Import into set</label>
+        <input type="text" class="input form-input" id="import-set-name" value="${esc(draft.setName)}" autocomplete="off" />
+      </div>` : ""}`;
+
+  document.getElementById("import-force-multi")?.addEventListener("change", (e) => {
+    draft.forceMultiSet = (e.target as HTMLInputElement).checked;
+    renderImportOptions();
+  });
+  document.getElementById("import-set-name")?.addEventListener("input", (e) => {
+    draft.setName = (e.target as HTMLInputElement).value;
+    renderImportSummary();
+  });
+  renderImportSummary();
+}
+
+function renderImportSummary(): void {
+  const draft = importDraft;
+  if (!draft) return;
+  const result = parseDraft(draft);
+  const total = result.sets.reduce((n, s) => n + s.tokens.length, 0);
+
+  let overlapping = 0;
+  const rows = result.sets.map((s) => {
+    const existing = state.snapshot.sets.find((x) => x.name === s.name);
+    const names = new Set(existing?.tokens.map((t) => t.name));
+    const common = s.tokens.filter((t) => names.has(t.name)).length;
+    overlapping += common;
+    const status = !existing ? "new set" : common > 0 ? `exists · ${common} with the same name` : "exists";
+    return `<li class="import-set-row body-s"><span>${esc(s.name)}</span>
+      <span class="import-set-meta">${plural(s.tokens.length, "token")} · ${status}</span></li>`;
+  }).join("");
+
+  const newThemes = result.themes.filter((t) => !state.themes.some((x) => x.group === t.group && x.name === t.name));
+  const keptThemes = result.themes.length - newThemes.length;
+
+  el("import-summary").innerHTML = `
+    <ul class="import-sets">${rows}</ul>
+    ${overlapping > 0 ? `
+      <div class="form-field">
+        <label class="form-label" for="import-mode">Tokens that already exist</label>
+        <select class="select" id="import-mode">
+          <option value="skip">Keep the existing ones</option>
+          <option value="overwrite">Replace them with the imported ones</option>
+        </select>
+      </div>` : ""}
+    ${result.themes.length > 0 ? `
+      <label class="checkbox-container body-s">
+        <input type="checkbox" class="checkbox-input" id="import-themes" ${newThemes.length ? "checked" : "disabled"} />
+        <span>Import ${plural(newThemes.length, "theme")}${keptThemes ? ` (${keptThemes} already exist and are kept)` : ""}</span>
+      </label>` : ""}
+    ${result.warnings.length ? `<div class="body-s modal-warning">${result.warnings.map(esc).join("<br>")}</div>` : ""}`;
+
+  el<HTMLButtonElement>("confirm-import-btn").disabled = total === 0 && newThemes.length === 0;
+}
+
+function doImport(): void {
+  const draft = importDraft;
+  if (!draft) return;
+  const result = parseDraft(draft);
+  const mode = (document.getElementById("import-mode") as HTMLSelectElement | null)?.value === "overwrite" ? "overwrite" : "skip";
+  const withThemes = (document.getElementById("import-themes") as HTMLInputElement | null)?.checked ?? false;
+
+  const ops: Op[] = result.sets
+    .filter((s) => s.tokens.length > 0 || !state.snapshot.sets.some((x) => x.name === s.name))
+    .map((s) => ({ op: "import-set", name: s.name, tokens: s.tokens, mode }));
+  if (withThemes) {
+    for (const t of result.themes) {
+      if (state.themes.some((x) => x.group === t.group && x.name === t.name)) continue;
+      ops.push({ op: "create-theme", group: t.group, name: t.name, setNames: t.setNames });
+    }
+  }
+  closeModal();
+  void runOps(ops);
+}
+
+function showImportModal(): void {
+  importDraft = null;
+  importFileName = "imported";
+  showModal(`
+    <div class="modal-header">
+      <h2 class="modal-title">Import tokens</h2>
+      ${CLOSE_BTN_SVG}
+    </div>
+    <div class="modal-body">
+      <div class="import-source">
+        <input type="file" accept=".json,application/json" id="import-file-input" class="hidden" />
+        <button type="button" data-appearance="secondary" id="import-choose-btn">Choose JSON file</button>
+        <span class="body-s import-file-name" id="import-file-name">or paste the JSON below</span>
+      </div>
+      <textarea class="input import-paste" id="import-paste" spellcheck="false"
+                placeholder='{ "color": { "primary": { "$value": "#0055ff", "$type": "color" } } }'
+                aria-label="Token JSON"></textarea>
+      <p class="body-s modal-hint">Penpot / DTCG / Tokens Studio JSON. A file with <code>$themes</code> or
+        <code>$metadata</code> holds several sets; otherwise it's one set.</p>
+      <div id="import-options" class="import-options"></div>
+      <div id="import-summary"></div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" data-appearance="secondary" data-modal-close>Cancel</button>
+      <button type="button" data-appearance="primary" id="confirm-import-btn" disabled>Import</button>
+    </div>`);
+  el("modal-container").classList.add("modal--wide");
+
+  const fileInput = el<HTMLInputElement>("import-file-input");
+  const paste = el<HTMLTextAreaElement>("import-paste");
+  el("import-choose-btn").addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    void file.text().then((text) => {
+      el("import-file-name").textContent = file.name;
+      paste.value = text;
+      loadImportText(text, file.name);
+    });
+  });
+  let pasteTimer: ReturnType<typeof setTimeout> | undefined;
+  paste.addEventListener("input", () => {
+    clearTimeout(pasteTimer);
+    pasteTimer = setTimeout(() => loadImportText(paste.value, importFileName), 300);
+  });
+  el("confirm-import-btn").addEventListener("click", doImport);
+}
+
+// ════════════════════════════════════════════════════════════════════════
 //  GLOBAL EVENT LISTENERS
 // ════════════════════════════════════════════════════════════════════════
 
@@ -3904,6 +4653,15 @@ function bindGlobalListeners(): void {
 
   // Math info
   el("math-info-btn")?.addEventListener("click", showMathInfoModal);
+
+  // Check tokens, import / export
+  el("check-tokens-btn")?.addEventListener("click", showCheckModal);
+  el("import-btn")?.addEventListener("click", showImportModal);
+  el("export-btn")?.addEventListener("click", () => showExportModal(null));
+
+  // Selection panel
+  el("selection-bar")?.addEventListener("click", toggleSelectionPanel);
+  renderSelectionPanel();
 
   // Themes
   el("themes-settings-btn")?.addEventListener("click", () => showThemesModal());
